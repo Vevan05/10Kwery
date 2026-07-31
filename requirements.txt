@@ -10,7 +10,7 @@ rank-bm25==0.2.2
 sentence-transformers==3.3.1
 torch==2.5.1
 
-openai==1.57.0          
+cohere>=5.0.0        
 
 python-dotenv==1.0.1
 tqdm==4.67.1

@@ -3,7 +3,8 @@ import re
 from pathlib import Path
 
 import tiktoken
-from bs4 import BeautifulSoup, NavigableString, Tag
+from bs4 import BeautifulSoup, Tag
+from bs4.element import NavigableString
 from tqdm import tqdm
 
 
@@ -13,25 +14,27 @@ OUTPUT_PATH = Path("data/chunks/chunks.jsonl")
 CHUNK_SIZE_TOKENS = 600
 CHUNK_OVERLAP_TOKENS = 80
 MIN_CHUNK_TOKENS = 20
+MIN_TABLE_TOKENS = 15
 
 ENCODING = tiktoken.get_encoding("cl100k_base")
 
 ITEM_HEADER_RE = re.compile(
     r"^\s*ITEM\s+\d{1,2}[A-Z]?\.?\s*[-\u2013\u2014.:]?\s*[A-Z]",
-    re.IGNORECASE
+    re.IGNORECASE,
 )
+
 MAX_HEADER_LEN = 120
 
 
-def count_tokens(text : str) -> int:
+def count_tokens(text: str) -> int:
     return len(ENCODING.encode(text))
 
 
-def is_section_header(line : str) -> bool:
+def is_section_header(line: str) -> bool:
     return bool(ITEM_HEADER_RE.match(line)) and len(line) <= MAX_HEADER_LEN
 
 
-def clean_soup(soup : BeautifulSoup) -> None:
+def clean_soup(soup: BeautifulSoup) -> None:
     for tag in soup(["script", "style", "noscript"]):
         tag.decompose()
 
@@ -44,18 +47,19 @@ def clean_soup(soup : BeautifulSoup) -> None:
 
 def table_to_text(table: Tag) -> str:
     rows = []
+
     for tr in table.find_all("tr"):
-        cells = [c.get_text(" ", strip = True) for c in tr.find_all(["td", "th"])]
+        cells = [c.get_text(" ", strip=True) for c in tr.find_all(["td", "th"])]
         cells = [c for c in cells if c]
 
         if cells:
-            rows.append('|'.join(cells))
+            rows.append(" | ".join(cells))
 
     return "\n".join(rows)
 
 
-def extract_blocks(soup : BeautifulSoup) -> list[tuple[str, str]]:
-    tables: list[str] = []
+def extract_blocks(soup: BeautifulSoup) -> list[tuple[str, str]]:
+    tables = []
 
     for table in soup.find_all("table"):
         if table.parent is None:
@@ -72,9 +76,10 @@ def extract_blocks(soup : BeautifulSoup) -> list[tuple[str, str]]:
 
         table.replace_with(NavigableString(f"\n@@TABLE_{idx}@@\n"))
 
-    full_text = soup.getText("\n", strip = True)
+    full_text = soup.get_text("\n", strip=True)
 
-    blocks: list[tuple[str, str]] = []
+    blocks = []
+
     for line in full_text.split("\n"):
         line = line.strip()
 
@@ -82,16 +87,29 @@ def extract_blocks(soup : BeautifulSoup) -> list[tuple[str, str]]:
             continue
 
         match = re.match(r"@@TABLE_(\d+)@@$", line)
+
         if match:
-            blocks.append(("table", tables[int(match.group(1))]))
+            table_text = tables[int(match.group(1))]
+
+            if count_tokens(table_text) < MIN_TABLE_TOKENS:
+                blocks.append(("text", table_text.replace("\n", " | ")))
+            else:
+                blocks.append(("table", table_text))
+
         else:
             blocks.append(("text", line))
 
     return blocks
 
 
-def make_chunk(text: str, section: str, chunk_type: str, meta: dict, chunk_index: int) -> dict:
-    return{
+def make_chunk(
+    text: str,
+    section: str,
+    chunk_type: str,
+    meta: dict,
+    chunk_index: int,
+) -> dict:
+    return {
         "chunk_id": f"{meta['accession_number']}_{chunk_index}",
         "text": text,
         "section": section,
@@ -103,26 +121,35 @@ def make_chunk(text: str, section: str, chunk_type: str, meta: dict, chunk_index
         "form": meta["form"],
         "filing_date": meta["filing_date"],
         "accession_number": meta["accession_number"],
-        "source_url": meta.get("source_url")  
+        "source_url": meta.get("source_url"),
     }
 
+
 def build_chunks(blocks: list[tuple[str, str]], meta: dict) -> list[dict]:
-    chunks: list[dict] = []
+    chunks = []
+
     current_section = "Unknown"
-    buffer_lines: list[str] = []
+
+    buffer_lines = []
     buffer_tokens = 0
 
     def flush():
         nonlocal buffer_lines, buffer_tokens
+
         text = "\n".join(buffer_lines).strip()
 
-        token_count = count_tokens(text)
+        if text and count_tokens(text) >= MIN_CHUNK_TOKENS:
+            chunks.append(
+                make_chunk(
+                    text,
+                    current_section,
+                    "text",
+                    meta,
+                    len(chunks),
+                )
+            )
 
-        if text and token_count >= MIN_CHUNK_TOKENS:
-            chunks.append(make_chunk(text, current_section, "text", meta, len(chunks)))
-
-
-        overlap: list[str] = []
+        overlap = []
         tokens = 0
 
         for line in reversed(buffer_lines):
@@ -138,16 +165,30 @@ def build_chunks(blocks: list[tuple[str, str]], meta: dict) -> list[dict]:
     for block_type, content in blocks:
         if block_type == "table":
             flush()
-            chunks.append(make_chunk(content, current_section, "table", meta, len(chunks)))
+
+            chunks.append(
+                make_chunk(
+                    content,
+                    current_section,
+                    "table",
+                    meta,
+                    len(chunks),
+                )
+            )
+
             continue
 
         if is_section_header(content):
             flush()
-            buffer_lines, buffer_tokens = [], 0
+
+            buffer_lines = []
+            buffer_tokens = 0
             current_section = content
+
             continue
 
         line_tokens = count_tokens(content)
+
         if buffer_lines and buffer_tokens + line_tokens > CHUNK_SIZE_TOKENS:
             flush()
 
@@ -155,6 +196,7 @@ def build_chunks(blocks: list[tuple[str, str]], meta: dict) -> list[dict]:
         buffer_tokens += line_tokens
 
     flush()
+
     return chunks
 
 
@@ -162,16 +204,22 @@ def process_filing(html_path: Path) -> list[dict]:
     meta_path = html_path.with_suffix(".json")
 
     if not meta_path.exists():
-        tqdm.write(f"WARNING: no metadata sidecar for {html_path.name}, skipping...")
+        tqdm.write(f"WARNING: no metadata sidecar for {html_path.name}, skipping")
         return []
 
     meta = json.loads(meta_path.read_text())
-    html = html_path.read_text(encoding = "utf-8", errors = "ignore")
 
-    soup = BeautifulSoup(html, 'lxml')
+    html = html_path.read_text(
+        encoding="utf-8",
+        errors="ignore",
+    )
+
+    soup = BeautifulSoup(html, "lxml")
+
     clean_soup(soup)
 
     blocks = extract_blocks(soup)
+
     return build_chunks(blocks, meta)
 
 
@@ -179,31 +227,50 @@ def main():
     html_files = sorted(FILINGS_DIR.glob("*/*.htm"))
 
     if not html_files:
-        raise RuntimeError(f"No .htm files found under {FILINGS_DIR}/. Run ingest.py first")
+        raise RuntimeError(
+            f"No .htm files found under {FILINGS_DIR}. run ingest.py first"
+        )
 
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    OUTPUT_PATH.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     total_chunks = 0
-    type_counts = {"text": 0, "table": 0}
 
-    with OUTPUT_PATH.open("w", encoding='utf-8') as out:
-        for html_path in tqdm(html_files, desc = 'Filings'):
+    type_counts = {
+        "text": 0,
+        "table": 0,
+    }
+
+    with OUTPUT_PATH.open(
+        "w",
+        encoding="utf-8",
+    ) as out:
+
+        for html_path in tqdm(
+            html_files,
+            desc="Filings",
+        ):
             try:
                 chunks = process_filing(html_path)
+
             except Exception as e:
                 tqdm.write(f"ERROR processing {html_path.name}: {e}")
                 continue
 
             for chunk in chunks:
                 out.write(json.dumps(chunk) + "\n")
+
                 total_chunks += 1
                 type_counts[chunk["chunk_type"]] += 1
 
-    print(f"\nDone. {total_chunks} chunks from {len(html_files)} filings "
-    f"({type_counts['text']} text, {type_counts['table']} table) "
-    f"written to {OUTPUT_PATH}")
+    print(
+        f"Done. {total_chunks} chunks from {len(html_files)} filings "
+        f"({type_counts['text']} text, {type_counts['table']} table) "
+        f"written to {OUTPUT_PATH}"
+    )
+
 
 if __name__ == "__main__":
     main()
-
-        
