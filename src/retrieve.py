@@ -62,18 +62,12 @@ def embed_query(query: str) -> np.ndarray:
     return np.asarray(embeddings)
 
 
-def vector_search(
-    query_embedding: np.ndarray,
-    k: int,
-) -> list[str]:
-    chroma_client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+def vector_search(query_embedding: np.ndarray, k: int,) -> list[str]:
+    chroma_client = chromadb.PersistentClient(path = str(CHROMA_DIR))
 
     collection = chroma_client.get_collection("filings")
 
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=k,
-    )
+    results = collection.query(query_embeddings = [query_embedding], n_results = k,)
 
     return results["ids"][0]
 
@@ -86,28 +80,17 @@ def keyword_search(query: str, k: int) -> list[str]:
     chunk_ids = data["chunk_ids"]
 
     scores = bm25.get_scores(tokenise(query))
-
-    ranked = sorted(
-        range(len(scores)),
-        key=lambda i: scores[i],
-        reverse=True,
-    )
+    ranked = sorted(range(len(scores)), key = lambda i: scores[i], reverse = True,)
 
     return [chunk_ids[i] for i in ranked[:k]]
 
 
-def reciprocal_rank_fusion(
-    *ranked_lists: list[str],
-    k: int = RRF_K,
-) -> list[str]:
+def reciprocal_rank_fusion(*ranked_lists: list[str], k: int = RRF_K,) -> list[str]:
     scores = {}
 
     for ranked in ranked_lists:
         for rank, chunk_id in enumerate(ranked):
-            scores[chunk_id] = (
-                scores.get(chunk_id, 0.0)
-                + 1.0 / (k + rank + 1)
-            )
+            scores[chunk_id] = (scores.get(chunk_id, 0.0) + 1.0 / (k + rank + 1))
 
     return [
         cid
@@ -119,12 +102,7 @@ def reciprocal_rank_fusion(
     ]
 
 
-def rerank(
-    query: str,
-    candidate_ids: list[str],
-    chunk_lookup: dict[str, dict],
-    top_k: int,
-) -> list[dict]:
+def rerank(query: str, candidate_ids: list[str], chunk_lookup: dict[str, dict], top_k: int) -> list[dict]:
     candidates = [
         chunk_lookup[cid]
         for cid in candidate_ids
@@ -141,10 +119,7 @@ def rerank(
     for chunk, score in zip(candidates, scores):
         chunk["rerank_score"] = float(score)
 
-    candidates.sort(
-        key=lambda c: c["rerank_score"],
-        reverse=True,
-    )
+    candidates.sort(key=lambda c: c["rerank_score"], reverse=True)
 
     return candidates[:top_k]
 
@@ -154,29 +129,13 @@ def retrieve(query: str) -> list[dict]:
 
     query_embedding = embed_query(query)
 
-    vector_ids = vector_search(
-        query_embedding,
-        K_VECTOR,
-    )
-
-    bm25_ids = keyword_search(
-        query,
-        K_BM25,
-    )
-
-    fused_ids = reciprocal_rank_fusion(
-        vector_ids,
-        bm25_ids,
-    )
+    vector_ids = vector_search(query_embedding, K_VECTOR)
+    bm25_ids = keyword_search(query, K_BM25)
+    fused_ids = reciprocal_rank_fusion(vector_ids, bm25_ids)
 
     top_candidates = fused_ids[: K_VECTOR + K_BM25]
 
-    return rerank(
-        query,
-        top_candidates,
-        chunk_lookup,
-        FINAL_K,
-    )
+    return rerank(query,top_candidates, chunk_lookup, FINAL_K)
 
 
 def main():
