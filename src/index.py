@@ -1,7 +1,8 @@
 import json
 import pickle
 import re
-from collections.abc import Sequence
+import shutil
+import sys
 from pathlib import Path
 import numpy as np
 
@@ -18,6 +19,16 @@ EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 EMBED_BATCH_SIZE = 256
 
 TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+STOPWORDS = frozenset(
+    """a an the and or but if then else when at by for with about against between
+    into through during before after above below to from up down in out on off over
+    under again further once here there all any both each few more most other some
+    such no nor not only own same so than too very can will just should now is are
+    was were be been being have has had having do does did doing would could i you
+    he she it we they what which who whom this that these those am its his her their
+    our your my me him them as of s t don didn""".split()
+)
 
 print(f"Loading embedding model {EMBEDDING_MODEL}...")
 
@@ -72,7 +83,7 @@ def build_vector_index(chunks: list[dict]) -> None:
         if not batch:
             continue
 
-        texts = [c["text"] for c in batch]
+        texts = [c.get("summary") or c["text"] for c in batch]
         embeddings = embed_batch(texts)
 
         collection.add(
@@ -97,11 +108,14 @@ def build_vector_index(chunks: list[dict]) -> None:
 
 
 def tokenise(text: str) -> list[str]:
-    return TOKEN_RE.findall(text.lower())
+    return [t for t in TOKEN_RE.findall(text.lower()) if t not in STOPWORDS]
 
 
 def build_keyword_index(chunks: list[dict]) -> None:
-    tokenized_corpus = [tokenise(c["text"]) for c in chunks]
+    tokenized_corpus = [
+        tokenise(c["text"] + " " + (c.get("summary") or ""))
+        for c in chunks
+    ]
     bm25 = BM25Okapi(tokenized_corpus)
 
     BM25_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -119,6 +133,11 @@ def build_keyword_index(chunks: list[dict]) -> None:
 
 
 def main():
+    if "--force" in sys.argv:
+        print("Force rebuild: wiping existing indexes...")
+        shutil.rmtree(CHROMA_DIR, ignore_errors=True)
+        BM25_PATH.unlink(missing_ok=True)
+
     chunks = load_chunks()
     print(f"Loaded {len(chunks)} from {CHUNKS_PATH}")
 

@@ -2,7 +2,13 @@ import json
 from pathlib import Path
 
 from generate import check_citations, generate_answer
-from retrieve import embed_query, load_chunk_lookup, retrieve, vector_search
+from retrieve import (
+    detect_form_filter,
+    embed_query,
+    load_chunk_lookup,
+    retrieve,
+    vector_search,
+)
 
 EVAL_SET_PATH = Path("eval/qa_pairs.json")
 TOP_K = 5
@@ -20,7 +26,7 @@ def vector_only_retrieve(
     query: str, chunk_lookup: dict[str, dict], k: int = TOP_K
 ) -> list[dict]:
     embedding = embed_query(query)
-    ids = vector_search(embedding, k)
+    ids = vector_search(embedding, k, form=detect_form_filter(query))
     return [chunk_lookup[cid] for cid in ids if cid in chunk_lookup]
 
 
@@ -64,6 +70,7 @@ def run_evaluation() -> None:
 
     citation_clean = 0
     keyword_scores = []
+    disagreements = 0
 
     print(f"Running {len(eval_set)} questions through both retrieval configs...\n")
 
@@ -77,6 +84,9 @@ def run_evaluation() -> None:
 
         b_rank = first_hit_rank(baseline_chunks, expected_tickers)
         h_rank = first_hit_rank(hybrid_chunks, expected_tickers)
+
+        if b_rank != h_rank:
+            disagreements += 1
 
         baseline_rr.append(reciprocal_rank(b_rank))
         hybrid_rr.append(reciprocal_rank(h_rank))
@@ -95,9 +105,19 @@ def run_evaluation() -> None:
         kw_score = keyword_coverage(answer, expected_keywords)
         keyword_scores.append(kw_score)
 
+        def ticker_precision(chunks: list[dict]) -> float:
+            if not expected_tickers or not chunks:
+                return 0.0
+            hits = sum(1 for c in chunks if c["ticker"] in expected_tickers)
+            return hits / len(chunks)
+
+        marker = "DIFF" if b_rank != h_rank else "    "
+
         print(f"[{i}/{len(eval_set)}] {query[:65]}")
         print(
-            f"    baseline rank: {b_rank or '-':<4} hybrid rank: {h_rank or '-':<4} "
+            f"    {marker} baseline rank: {b_rank or '-':<4} hybrid rank: {h_rank or '-':<4} "
+            f"precision b/h: {ticker_precision(baseline_chunks):.0%}/"
+            f"{ticker_precision(hybrid_chunks):.0%}  "
             f"citations clean: {is_clean}   keyword coverage: {kw_score:.0%}"
         )
 
@@ -118,6 +138,7 @@ def run_evaluation() -> None:
         f"{baseline_hit5}/{n} ({baseline_hit5 / n:.0%})  "
         f"vs  {hybrid_hit5}/{n} ({hybrid_hit5 / n:.0%})"
     )
+    print(f"Rank disagreements b/h:       {disagreements}/{n}")
     print(
         f"Citation validity rate:       "
         f"{citation_clean}/{n} ({citation_clean / n:.0%})"

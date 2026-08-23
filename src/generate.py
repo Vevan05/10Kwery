@@ -5,7 +5,7 @@ import sys
 from dotenv import load_dotenv
 from groq import Groq
 
-from retrieve import retrieve
+from retrieve import detect_form_filter, indexed_companies, refusal_reason, retrieve
 
 load_dotenv()
 
@@ -16,12 +16,14 @@ if not GROQ_API_KEY:
         '  GROQ_API_KEY="gsk_..."'
     )
 
-MODEL = "llama-3.3-70b-versatile"
+MODEL = "openai/gpt-oss-120b"
 MAX_TOKENS = 1024
+
+FANCY_CITATION_RE = re.compile(r"【(\d+)†[^】]*】")
 
 SYSTEM_PROMPT = """You are a financial research assistant that answers questions using ONLY the provided SEC filing excerpts below. Follow these rules exactly:
 
-1. Every factual claim, especially every number, must be followed by a bracketed citation like [1] or [2] pointing to the excerpt it came from.
+1. Every factual claim, especially every number, must be followed by a bracketed citation like [1] or [2] pointing to the excerpt it came from. Always use plain square brackets with just the number, e.g. [1].
 2. Do not use any outside knowledge, even if you are confident about the answer. Only use what is in the excerpts.
 3. If the excerpts do not contain enough information to answer the question, say so explicitly instead of guessing.
 4. If excerpts disagree or are ambiguous, point that out rather than picking one silently.
@@ -32,12 +34,20 @@ client = Groq(api_key=GROQ_API_KEY)
 
 def format_context(chunks: list[dict]) -> str:
     blocks = []
+
     for i, chunk in enumerate(chunks, 1):
         header = (
             f"[{i}] {chunk['ticker']} {chunk['form']} filed {chunk['filing_date']} "
             f"— {chunk['section'][:80]}"
         )
-        blocks.append(f"{header}\n{chunk['text']}")
+
+        body = chunk["text"]
+
+        if chunk.get("chunk_type") == "table" and chunk.get("summary"):
+            body = f"[Table overview: {chunk['summary']}]\n{body}"
+
+        blocks.append(f"{header}\n{body}")
+
     return "\n\n".join(blocks)
 
 
@@ -63,17 +73,35 @@ def generate_answer(query: str, chunks: list[dict]) -> str:
     if content is None:
         raise RuntimeError("Model returned no content.")
 
-    return content
+    return FANCY_CITATION_RE.sub(lambda m: f"[{m.group(1)}]", content)
 
 
 def answer_query(query: str) -> None:
     print(f"\nRetrieving context for: {query}")
+
+    form_filter = detect_form_filter(query)
+    if form_filter:
+        print(f"Detected form filter: {form_filter} — restricting retrieval to {form_filter} filings")
+
     chunks = retrieve(query)
     if not chunks:
         print("No relevant chunks found in the index.")
         return
 
-    print(f"Retrieved {len(chunks)} chunks, generating answer...\n")
+    print(f"Retrieved {len(chunks)} candidate chunks.")
+
+    refusal = refusal_reason(query, chunks)
+
+    if refusal:
+        print("\n" + "=" * 70)
+        print("CANNOT ANSWER FROM INDEX")
+        print("=" * 70)
+        print(f"This question can't be answered with the indexed filings: {refusal}.")
+        print(f"Indexed companies: {', '.join(indexed_companies())}")
+        return
+
+    print("Generating answer...\n")
+
     answer = generate_answer(query, chunks)
 
     bad_citations = check_citations(answer, len(chunks))

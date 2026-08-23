@@ -25,9 +25,67 @@ ITEM_HEADER_RE = re.compile(
 
 MAX_HEADER_LEN = 120
 
+MAX_SUMMARY_ROWS = 8
+MAX_SUMMARY_COLS = 6
+MAX_SUMMARY_VALUES = 6
+
 
 def count_tokens(text: str) -> int:
     return len(ENCODING.encode(text))
+
+
+def summarize_table(
+    table_text: str,
+    meta: dict,
+    section: str,
+    lead_in: str = "",
+) -> str:
+    """Rule-based natural-language summary so dense tables embed well.
+
+    Semantic content first (lead-in, columns, line items); company/form
+    identity reduced to a short tag so shared boilerplate does not drown
+    the distinguishing tokens in the embedding space.
+    """
+    lines = [ln.strip() for ln in table_text.split("\n") if ln.strip()]
+
+    if not lines:
+        return ""
+
+    company = meta.get("company_name") or meta["ticker"]
+
+    parts = []
+
+    if lead_in:
+        parts.append(lead_in[:220].strip())
+
+    parts.append(f"{company} {meta['form']} data table")
+
+    header_cells = [c.strip() for c in lines[0].split("|") if c.strip()]
+    if header_cells:
+        parts.append(f"with columns {', '.join(header_cells[:MAX_SUMMARY_COLS])}")
+
+    row_labels = []
+    for line in lines[1:]:
+        first_cell = line.split("|")[0].strip()
+
+        if (
+            first_cell
+            and first_cell not in row_labels
+            and len(row_labels) < MAX_SUMMARY_ROWS
+            and not re.fullmatch(r"[\d$%,.\s()\-]*", first_cell)
+        ):
+            row_labels.append(first_cell)
+
+    if row_labels:
+        parts.append(f"covering line items {', '.join(row_labels)}")
+
+    values = re.findall(r"\(?\d{1,3}(?:\.\d+)?\)?%", table_text)[:3]
+    values += re.findall(r"\$\s?\d{1,3}(?:,\d{3})*(?:\.\d+)?", table_text)[:3]
+
+    if values:
+        parts.append(f"including values such as {', '.join(values)}")
+
+    return ". ".join(parts) + "."
 
 
 def is_section_header(line: str) -> bool:
@@ -108,10 +166,12 @@ def make_chunk(
     chunk_type: str,
     meta: dict,
     chunk_index: int,
+    summary: str = "",
 ) -> dict:
     return {
         "chunk_id": f"{meta['accession_number']}_{chunk_index}",
         "text": text,
+        "summary": summary,
         "section": section,
         "chunk_type": chunk_type,
         "token_count": count_tokens(text),
@@ -162,9 +222,16 @@ def build_chunks(blocks: list[tuple[str, str]], meta: dict) -> list[dict]:
         buffer_lines = overlap
         buffer_tokens = tokens
 
-    for block_type, content in blocks:
+    for block_index, (block_type, content) in enumerate(blocks):
         if block_type == "table":
             flush()
+
+            lead_in = ""
+
+            for prev_type, prev_content in reversed(blocks[:block_index]):
+                if prev_type == "text" and prev_content:
+                    lead_in = prev_content
+                    break
 
             chunks.append(
                 make_chunk(
@@ -173,6 +240,9 @@ def build_chunks(blocks: list[tuple[str, str]], meta: dict) -> list[dict]:
                     "table",
                     meta,
                     len(chunks),
+                    summary=summarize_table(
+                        content, meta, current_section, lead_in
+                    ),
                 )
             )
 
