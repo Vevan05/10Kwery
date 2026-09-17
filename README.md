@@ -19,6 +19,8 @@ The project demonstrates an end-to-end financial document retrieval pipeline con
 - Type-balanced final selection so relevant tables are not crowded out by prose
 - Refusal handling for out-of-corpus companies and low-relevance matches
 - Citation-grounded answer generation using **Groq**
+- Answer caching to avoid redundant LLM calls during evaluation
+- Rate limiting and retry with exponential backoff for the Groq free tier
 - Evaluation using **MRR**, **Hit@1**, **Hit@5**, ticker precision, rank disagreement, citation validity, and keyword coverage
 
 
@@ -39,9 +41,13 @@ The project demonstrates an end-to-end financial document retrieval pipeline con
 │   ├── index.py
 │   ├── retrieve.py
 │   ├── generate.py
-│   └── evaluate.py
+│   ├── evaluate.py
+│   ├── entailment.py
+│   ├── query_rewrite.py
+│   ├── router.py
+│   └── session.py
 └── eval/
-    └── qa_pairs.json
+    └── qa_pairs.json     # 60 questions (18 dev + 42 heldout)
 ```
 
 
@@ -77,20 +83,20 @@ Vector Search  BM25 Search    Vector Search   BM25 Search
 (all chunks)   (all chunks)   (tables only)   (tables only)
     │            │                │                │
     └────────────┴───────┬────────┴────────────────┘
-                         ▼
-          Reciprocal Rank Fusion (k = 60)
-                         │
-                         ▼
-     Cross-Encoder Reranking (windowed, best-window score)
-                         │
-                         ▼
-      Type-Balanced Final Selection (table slot reservation)
-                         │
-                         ▼
-                    Groq LLM
-                         │
-                         ▼
-          Citation-grounded Answer
+                          ▼
+           Reciprocal Rank Fusion (k = 60)
+                          │
+                          ▼
+      Cross-Encoder Reranking (windowed, best-window score)
+                          │
+                          ▼
+       Type-Balanced Final Selection (table slot reservation)
+                          │
+                          ▼
+                     Groq LLM
+                          │
+                          ▼
+           Citation-grounded Answer
 ```
 
 
@@ -202,10 +208,49 @@ SOURCES
 
 Questions about companies outside the indexed corpus trigger an explicit refusal instead of a hallucinated answer.
 
+**Streaming** is available:
+
+```bash
+python src/generate.py "Your question?" --stream
+```
+
+**Multi-turn** mode:
+
+```bash
+python src/generate.py --chat
+```
+
+**Disable caching** (force fresh Groq calls every time):
+
+```bash
+python src/generate.py "Your question?" --no-cache
+```
+
+**Clear the answer cache**:
+
+```bash
+python src/generate.py --clear-cache
+```
+
+Additional flags: `--no-rewrite` (skip query rewriting), `--no-router` (skip company routing), `--verify` (citation entailment check), `--llm-judge` (LLM-based entailment), `--legacy-rerank` (use legacy reranker mode).
+
 ### 5. Evaluate retrieval performance
 
 ```bash
 python src/evaluate.py
+```
+
+Run on a specific split:
+
+```bash
+python src/evaluate.py --split dev
+python src/evaluate.py --split heldout
+```
+
+Skip generation (retrieval-only):
+
+```bash
+python src/evaluate.py --no-llm
 ```
 
 The evaluation compares:
@@ -222,6 +267,9 @@ Metrics reported include:
 - Expected-ticker precision of retrieved context
 - Citation Validity
 - Expected Keyword Coverage
+- Groq API calls and cache hit counts
+
+Answers are cached in `eval/answers_cache.json` so re-running the eval does not repeat Groq calls for the same questions. On subsequent runs, expect **0 API calls**.
 
 
 # Retrieval Pipeline
@@ -267,29 +315,39 @@ Metrics reported include:
 | Citation Validity | Verifies that generated citations correspond to retrieved chunks. |
 | Keyword Coverage | Measures how well generated answers cover the expected concepts. |
 
-Latest results on the 18-question eval set (one item intentionally targets an unindexed company and counts as a miss):
+Latest results on the 60-question eval set (18 dev + 42 heldout):
 
 ```text
-MRR — vector-only baseline:   0.889
-MRR — hybrid + rerank:        0.900
-Hit@1 — baseline / hybrid:    16/18 (89%)  vs  16/18 (89%)
-Hit@5 — baseline / hybrid:    16/18 (89%)  vs  17/18 (94%)
-Rank disagreements b/h:       1/18
-Citation validity rate:       18/18 (100%)
-Avg. expected-keyword coverage: 78%
+MRR — vector-only baseline:   0.900
+MRR — hybrid + rerank:        0.933
+Hit@1 — baseline / hybrid:    54/60 (90%)  vs  56/60 (93%)
+Hit@5 — baseline / hybrid:    54/60 (90%)  vs  56/60 (93%)
+Rank disagreements b/h:       2/60
+Citation validity rate:       60/60 (100%)
+Avg. expected-keyword coverage: 85%
+Avg. hybrid retrieval latency:    16.88s
 ```
 
-The single disagreement is an under-specified segment question where vector-only retrieval returns no relevant company at all, while the hybrid's table channel surfaces the correct company's filing into the top five.
+The hybrid retrieval with table-aware reranking outperforms the vector-only baseline by ~3% across all metrics. All generated citations are valid (100% citation validity rate).
+
+
+# Groq Free Tier Notes
+
+The free Groq tier has a tight rate limit (~30 RPM). To avoid timeouts:
+
+- **Answer caching**: `eval/answers_cache.json` stores answers keyed by query + chunks. Re-running `evaluate.py` hits the cache for previously answered questions (0 API calls on subsequent runs).
+- **Rate limiting**: A configurable delay (`GROQ_REQUEST_DELAY`, default 2.5s) separates API calls.
+- **Retry logic**: Up to 3 retries with exponential backoff on rate-limit errors.
+- **Skip generation**: Use `--no-llm` to evaluate retrieval quality without hitting the API.
+- **Disable rewriting/router**: Use `--no-rewrite --no-router` to halve the number of Groq calls per question.
 
 
 # Future Improvements
 
-- LLM-based company routing for under-specified queries (e.g. mapping "the Services segment" to Apple before retrieval)
 - Optional two-stage reranking: a stronger cross-encoder arbitrating a MiniLM-shortlisted set
-- Streaming responses
 - Web interface
-- Multi-turn conversations
-- Support for additional SEC filing types (8-K)
+- Additional SEC filing types (8-K)
+- Batch evaluation with parallel API calls for faster large-scale runs
 
 
 # License

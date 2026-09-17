@@ -40,12 +40,12 @@ def summarize_table(
     section: str,
     lead_in: str = "",
 ) -> str:
-    """Rule-based natural-language summary so dense tables embed well.
+\
+\
+\
+\
+\
 
-    Semantic content first (lead-in, columns, line items); company/form
-    identity reduced to a short tag so shared boilerplate does not drown
-    the distinguishing tokens in the embedding space.
-    """
     lines = [ln.strip() for ln in table_text.split("\n") if ln.strip()]
 
     if not lines:

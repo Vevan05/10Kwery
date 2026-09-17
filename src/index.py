@@ -88,7 +88,7 @@ def build_vector_index(chunks: list[dict]) -> None:
 
         collection.add(
             ids=[c["chunk_id"] for c in batch],
-            embeddings=embeddings, # type: ignore
+            embeddings=embeddings,
             documents=[c["text"] for c in batch],
             metadatas=[
                 {

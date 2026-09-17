@@ -1,7 +1,10 @@
+import argparse
 import json
+import time
 from pathlib import Path
 
-from generate import check_citations, generate_answer
+from entailment import verify_citations
+from generate import check_citations, generate_answer, clear_answer_cache
 from retrieve import (
     detect_form_filter,
     embed_query,
@@ -14,12 +17,12 @@ EVAL_SET_PATH = Path("eval/qa_pairs.json")
 TOP_K = 5
 
 
-def load_eval_set() -> list[dict]:
-    if not EVAL_SET_PATH.exists():
+def load_eval_set(path: Path = EVAL_SET_PATH) -> list[dict]:
+    if not path.exists():
         raise RuntimeError(
-            f"{EVAL_SET_PATH} not found — create it first (see eval/qa_pairs.json template)."
+            f"{path} not found — create it first (see eval/qa_pairs.json template)."
         )
-    return json.loads(EVAL_SET_PATH.read_text())
+    return json.loads(path.read_text())
 
 
 def vector_only_retrieve(
@@ -35,11 +38,9 @@ def first_hit_rank(
 ) -> int | None:
     if not expected_tickers:
         return None
-
     for rank, chunk in enumerate(chunks, start=1):
         if chunk["ticker"] in expected_tickers:
             return rank
-
     return None
 
 
@@ -50,29 +51,52 @@ def reciprocal_rank(rank: int | None) -> float:
 def keyword_coverage(answer: str, expected_keywords: list[str]) -> float:
     if not expected_keywords:
         return 1.0
-
     answer_lower = answer.lower()
     found = sum(1 for kw in expected_keywords if kw.lower() in answer_lower)
     return found / len(expected_keywords)
 
 
-def run_evaluation() -> None:
-    eval_set = load_eval_set()
+def run_evaluation(
+    eval_file: Path = EVAL_SET_PATH,
+    split: str | None = None,
+    skip_generation: bool = False,
+    check_entailment: bool = False,
+    legacy_rerank: bool = False,
+    use_cache: bool = True,
+) -> None:
+    eval_set = load_eval_set(eval_file)
+    if split:
+        eval_set = [q for q in eval_set if q.get("split", "dev") == split]
+    if not eval_set:
+        raise RuntimeError(f"No questions with split={split!r} in {eval_file}")
     chunk_lookup = load_chunk_lookup()
+
+    if use_cache and Path("eval/answers_cache.json").exists():
+        cache = json.loads(Path("eval/answers_cache.json").read_text())
+        print(f"Cache loaded: {len(cache)} previously answered questions.")
+    else:
+        cache = {}
 
     baseline_rr = []
     hybrid_rr = []
-
     baseline_hit1 = 0
     hybrid_hit1 = 0
     baseline_hit5 = 0
     hybrid_hit5 = 0
-
     citation_clean = 0
     keyword_scores = []
+    entail_rates = []
     disagreements = 0
+    latencies = []
+    n_cached = 0
+    n_api_calls = 0
 
-    print(f"Running {len(eval_set)} questions through both retrieval configs...\n")
+    mode = "legacy" if legacy_rerank else "table-aware"
+    print(
+        f"Running {len(eval_set)} questions ({eval_file.name}"
+        f"{f' split={split}' if split else ''}, rerank={mode})"
+        " through both retrieval configs...\n"
+    )
 
     for i, item in enumerate(eval_set, 1):
         query = item["question"]
@@ -80,7 +104,9 @@ def run_evaluation() -> None:
         expected_keywords = item.get("expected_keywords", [])
 
         baseline_chunks = vector_only_retrieve(query, chunk_lookup, TOP_K)
-        hybrid_chunks = retrieve(query)
+        t0 = time.time()
+        hybrid_chunks = retrieve(query, reranker_mode=mode)
+        latencies.append(time.time() - t0)
 
         b_rank = first_hit_rank(baseline_chunks, expected_tickers)
         h_rank = first_hit_rank(hybrid_chunks, expected_tickers)
@@ -96,14 +122,23 @@ def run_evaluation() -> None:
         baseline_hit5 += b_rank is not None
         hybrid_hit5 += h_rank is not None
 
-        answer = generate_answer(query, hybrid_chunks)
-
-        bad_citations = check_citations(answer, len(hybrid_chunks))
-        is_clean = len(bad_citations) == 0
+        if skip_generation:
+            is_clean, kw_score, ent = True, 1.0, 1.0
+        else:
+            answer = generate_answer(query, hybrid_chunks, use_cache=use_cache)
+            if answer in cache.values():
+                n_cached += 1
+            else:
+                n_api_calls += 1
+            bad_citations = check_citations(answer, len(hybrid_chunks))
+            is_clean = len(bad_citations) == 0
+            kw_score = keyword_coverage(answer, expected_keywords)
+            ent = 1.0
+            if check_entailment and answer.strip():
+                ent = verify_citations(answer, hybrid_chunks)["entailment_rate"]
         citation_clean += is_clean
-
-        kw_score = keyword_coverage(answer, expected_keywords)
         keyword_scores.append(kw_score)
+        entail_rates.append(ent)
 
         def ticker_precision(chunks: list[dict]) -> float:
             if not expected_tickers or not chunks:
@@ -112,6 +147,7 @@ def run_evaluation() -> None:
             return hits / len(chunks)
 
         marker = "DIFF" if b_rank != h_rank else "    "
+        cache_marker = "[CACHED]" if answer in cache.values() else ""
 
         print(f"[{i}/{len(eval_set)}] {query[:65]}")
         print(
@@ -119,6 +155,8 @@ def run_evaluation() -> None:
             f"precision b/h: {ticker_precision(baseline_chunks):.0%}/"
             f"{ticker_precision(hybrid_chunks):.0%}  "
             f"citations clean: {is_clean}   keyword coverage: {kw_score:.0%}"
+            + (f"   entailment: {ent:.0%}" if check_entailment and not skip_generation else "")
+            + f" {cache_marker}"
         )
 
     n = len(eval_set)
@@ -147,7 +185,35 @@ def run_evaluation() -> None:
         f"Avg. expected-keyword coverage: "
         f"{sum(keyword_scores) / n:.0%}"
     )
+    if check_entailment and not skip_generation:
+        print(f"Avg. citation entailment:       {sum(entail_rates) / n:.0%}")
+    print(f"Avg. hybrid retrieval latency:    {sum(latencies) / n:.2f}s")
+    if not skip_generation:
+        cache_size = len(json.loads(Path("eval/answers_cache.json").read_text())) if Path("eval/answers_cache.json").exists() else 0
+        print(f"Groq API calls in this run:     {n_api_calls}")
+        print(f"Cache hits:                     {n_cached}")
+        print(f"Total cached entries:           {cache_size}")
 
 
 if __name__ == "__main__":
-    run_evaluation()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--eval-file", default=str(EVAL_SET_PATH))
+    ap.add_argument("--split", default=None)
+    ap.add_argument("--no-llm", action="store_true")
+    ap.add_argument("--verify", action="store_true")
+    ap.add_argument("--legacy-rerank", action="store_true")
+    ap.add_argument("--no-cache", action="store_true")
+    ap.add_argument("--clear-cache", action="store_true")
+    a = ap.parse_args()
+
+    if a.clear_cache:
+        clear_answer_cache()
+    else:
+        run_evaluation(
+            eval_file=Path(a.eval_file),
+            split=a.split,
+            skip_generation=a.no_llm,
+            check_entailment=a.verify,
+            legacy_rerank=a.legacy_rerank,
+            use_cache=not a.no_cache,
+        )

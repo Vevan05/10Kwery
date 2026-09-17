@@ -37,7 +37,7 @@ _company_dir: dict[str, str] | None = None
 
 
 def _get_company_directory() -> dict[str, str]:
-    """Map lowercased company names / name words / tickers -> ticker."""
+
     global _company_dir
 
     if _company_dir is None:
@@ -74,7 +74,10 @@ def indexed_companies() -> list[str]:
 
 
 def unindexed_company_mentions(query: str) -> list[str]:
-    """Possessive capitalized names ('Boeing's') not present in the corpus."""
+\
+\
+\
+
     directory = _get_company_directory()
 
     mentions = []
@@ -88,11 +91,39 @@ def unindexed_company_mentions(query: str) -> list[str]:
 
         mentions.append(name)
 
-    return mentions
+
+    if re.search(
+        r"\b(10\s*-\s*[kq]|10k|10q|filing|dividend|revenue|segment|report|disclos"
+        r"|cash|flow|margin|profit|earning|income|sales|growth|guidance|outlook)\b",
+        query,
+        re.I,
+    ):
+        for match in re.finditer(r"\b([A-Z][A-Za-z]{2,}(?:\s+[A-Z][A-Za-z]{2,})?)\b", query):
+            for part in match.group(1).split():
+                core = part.strip("&-").lower()
+                if (
+                    len(core) >= 3
+                    and core not in _NON_COMPANY_CAPS
+                    and core not in directory
+                    and part not in mentions
+                ):
+
+                    if match.start() == 0 and core in {"what", "how", "compare"}:
+                        continue
+                    mentions.append(part)
+                    break
+
+
+    seen, out = set(), []
+    for m in mentions:
+        if m.lower() not in seen:
+            seen.add(m.lower())
+            out.append(m)
+    return out
 
 
 def refusal_reason(query: str, chunks: list[dict]) -> str | None:
-    """Return a human-readable reason if the query cannot be answered from the index."""
+
     if not chunks:
         return "no excerpts were retrieved from the index"
 
@@ -130,11 +161,25 @@ STOPWORDS = frozenset(
     our your my me him them as of s t don didn""".split()
 )
 
-print(f"Loading embedding model {EMBEDDING_MODEL}...")
-embed_model = SentenceTransformer(EMBEDDING_MODEL)
 
-print(f"Loading reranker model {RERANKER_MODEL}...")
-reranker = CrossEncoder(RERANKER_MODEL)
+_embed_model = None
+_reranker_model = None
+
+
+def get_embed_model():
+    global _embed_model
+    if _embed_model is None:
+        print(f"Loading embedding model {EMBEDDING_MODEL}...")
+        _embed_model = SentenceTransformer(EMBEDDING_MODEL)
+    return _embed_model
+
+
+def get_reranker():
+    global _reranker_model
+    if _reranker_model is None:
+        print(f"Loading reranker model {RERANKER_MODEL}...")
+        _reranker_model = CrossEncoder(RERANKER_MODEL)
+    return _reranker_model
 
 
 def tokenise(text: str) -> list[str]:
@@ -158,7 +203,7 @@ def load_chunk_lookup() -> dict[str, dict]:
 def embed_query(query: str) -> np.ndarray:
     text = QUERY_INSTRUCTION + query
 
-    embeddings =  embed_model.encode(
+    embeddings = get_embed_model().encode(
         text,
         normalize_embeddings=True,
         convert_to_numpy=True
@@ -184,6 +229,7 @@ def vector_search(
     k: int,
     form: str | None = None,
     chunk_type: str | None = None,
+    tickers: list[str] | None = None,
 ) -> list[str]:
     chroma_client = chromadb.PersistentClient(path = str(CHROMA_DIR))
 
@@ -198,6 +244,12 @@ def vector_search(
 
     if chunk_type:
         conditions.append({"chunk_type": {"$eq": chunk_type}})
+
+    if tickers:
+        if len(tickers) == 1:
+            conditions.append({"ticker": {"$eq": tickers[0]}})
+        else:
+            conditions.append({"ticker": {"$in": tickers}})
 
     if len(conditions) == 1:
         kwargs["where"] = conditions[0]
@@ -229,6 +281,8 @@ def keyword_search(
     form_by_id: dict[str, str] | None = None,
     type_by_id: dict[str, str] | None = None,
     chunk_type: str | None = None,
+    tickers: list[str] | None = None,
+    ticker_by_id: dict[str, str] | None = None,
 ) -> list[str]:
     data = _load_bm25()
 
@@ -243,6 +297,11 @@ def keyword_search(
 
     if chunk_type and type_by_id:
         mask = np.array([type_by_id.get(cid) == chunk_type for cid in chunk_ids])
+        scores[~mask] = -np.inf
+
+    if tickers and ticker_by_id:
+        wanted = set(tickers)
+        mask = np.array([ticker_by_id.get(cid) in wanted for cid in chunk_ids])
         scores[~mask] = -np.inf
 
     ranked = sorted(range(len(scores)), key = lambda i: scores[i], reverse = True,)
@@ -291,7 +350,7 @@ def rerank_label(chunk: dict) -> str:
     return f"[{name} {chunk['form']} filed {chunk['filing_date']}] "
 
 
-def rerank(query: str, candidate_ids: list[str], chunk_lookup: dict[str, dict], top_k: int) -> list[dict]:
+def rerank(query: str, candidate_ids: list[str], chunk_lookup: dict[str, dict], top_k: int, mode: str = "table-aware") -> list[dict]:
     candidates = [
         chunk_lookup[cid]
         for cid in candidate_ids
@@ -308,7 +367,9 @@ def rerank(query: str, candidate_ids: list[str], chunk_lookup: dict[str, dict], 
         label = rerank_label(c)
 
         if c.get("chunk_type") == "table" and c.get("summary"):
-            pairs.append((query, label + c["summary"] + "\n" + c["text"][:500]))
+
+
+            pairs.append((query, label + c["summary"] + "\n" + c["text"][:1000]))
             spans.append(i)
 
             continue
@@ -317,7 +378,7 @@ def rerank(query: str, candidate_ids: list[str], chunk_lookup: dict[str, dict], 
             pairs.append((query, label + window))
             spans.append(i)
 
-    scores = reranker.predict(pairs, show_progress_bar=False)
+    scores = get_reranker().predict(pairs, show_progress_bar=False)
 
     best_scores: dict[int, float] = {}
 
@@ -331,19 +392,21 @@ def rerank(query: str, candidate_ids: list[str], chunk_lookup: dict[str, dict], 
 
     candidates.sort(key=lambda c: c["rerank_score"], reverse=True)
 
-    return select_balanced(candidates, top_k)
+    if mode == "legacy":
+        return select_balanced(candidates, top_k)
+    return select_table_aware(candidates, top_k)
 
 
 def select_balanced(candidates: list[dict], top_k: int) -> list[dict]:
-    """Final selection that stops prose from sweeping every slot.
+\
+\
+\
+\
+\
+\
+\
+\
 
-    MiniLM scores tables systematically below prose even when the table
-    is the best evidence (tables -8..-2, prose up to +2 in practice), so
-    absolute ranking locks tables out. Instead: fill greedily with a
-    cap on table slots, then reserve one seat for the single best table
-    whenever it is within TABLE_GAP_TOLERANCE of the best selected
-    chunk — i.e. tables compete against tables, junk tables stay out.
-    """
     selected: list[dict] = []
     n_tables = 0
 
@@ -383,32 +446,143 @@ def select_balanced(candidates: list[dict], top_k: int) -> list[dict]:
     return selected
 
 
-def retrieve(query: str, form: str | None = None) -> list[dict]:
+    selected.sort(key=lambda c: c["rerank_score"], reverse=True)
+
+    return selected
+
+
+def select_table_aware(
+    candidates: list[dict],
+    top_k: int,
+    max_table_slots: int = MAX_TABLE_SLOTS,
+    table_z_floor: float = -1.0,
+) -> list[dict]:
+\
+\
+\
+\
+\
+\
+\
+\
+
+    if not candidates:
+        return []
+    import math
+
+    tables = [c for c in candidates if c.get("chunk_type") == "table"]
+    proses = [c for c in candidates if c.get("chunk_type") != "table"]
+
+    def zmap(items: list[dict]) -> dict[int, float]:
+        if not items:
+            return {}
+        scores = [c["rerank_score"] for c in items]
+        mean = sum(scores) / len(scores)
+        var = sum((s - mean) ** 2 for s in scores) / len(scores)
+        std = math.sqrt(var) if var > 1e-12 else 1.0
+        return {id(c): (c["rerank_score"] - mean) / std for c in items}
+
+    zt, zp = zmap(tables), zmap(proses)
+    for c in candidates:
+        c["_calibrated"] = (zt if c.get("chunk_type") == "table" else zp).get(id(c), 0.0)
+
+    ordered = sorted(candidates, key=lambda c: c["_calibrated"], reverse=True)
+    selected: list[dict] = []
+    n_tables = 0
+    for c in ordered:
+        if len(selected) == top_k:
+            break
+        if c.get("chunk_type") == "table" and n_tables >= max_table_slots:
+            continue
+        selected.append(c)
+        if c.get("chunk_type") == "table":
+            n_tables += 1
+
+    if n_tables == 0 and tables and selected:
+        best_table = max(tables, key=lambda c: c["_calibrated"])
+        if best_table["_calibrated"] >= table_z_floor:
+            selected[-1] = best_table
+    for c in candidates:
+        c.pop("_calibrated", None)
+    selected.sort(key=lambda c: c["rerank_score"], reverse=True)
+    return selected
+
+
+def retrieve(
+    query: str,
+    form: str | None = None,
+    tickers: list[str] | None = None,
+    rewrite: bool = True,
+    history: list[dict] | None = None,
+    use_router: bool = True,
+    reranker_mode: str = "table-aware",
+) -> list[dict]:
+\
+\
+\
+\
+\
+\
+\
+
     chunk_lookup = load_chunk_lookup()
 
     if form is None:
+
+
         form = detect_form_filter(query)
+
+
+    routed: list[str] = []
+    if tickers is not None:
+        routed = list(tickers)
+    elif use_router:
+        try:
+            from router import route_companies as _route
+
+            routed = _route(query, indexed=indexed_companies(), history=history)
+        except Exception:
+            routed = []
+    retrieve.last_tickers = routed
+
+
+    eff_query = query
+    if rewrite:
+        try:
+            from query_rewrite import rewrite_query as _rewrite
+
+            eff_query = _rewrite(query, history=history, tickers=routed or None)
+        except Exception:
+            eff_query = query
+    retrieve.last_rewrite = eff_query
 
     form_by_id = (
         {cid: c["form"] for cid, c in chunk_lookup.items()} if form else None
     )
 
     type_by_id = {cid: c.get("chunk_type") for cid, c in chunk_lookup.items()}
+    ticker_by_id = {cid: c.get("ticker") for cid, c in chunk_lookup.items()}
+    tick_filter = routed or None
 
-    query_embedding = embed_query(query)
+    query_embedding = embed_query(eff_query)
 
-    vector_ids = vector_search(query_embedding, K_VECTOR, form=form)
-    bm25_ids = keyword_search(query, K_BM25, form=form, form_by_id=form_by_id)
+    vector_ids = vector_search(query_embedding, K_VECTOR, form=form, tickers=tick_filter)
+    bm25_ids = keyword_search(
+        eff_query, K_BM25, form=form, form_by_id=form_by_id,
+        tickers=tick_filter, ticker_by_id=ticker_by_id,
+    )
     table_ids = vector_search(
-        query_embedding, K_TABLE, form=form, chunk_type="table"
+        query_embedding, K_TABLE, form=form, chunk_type="table", tickers=tick_filter
     )
     table_bm25_ids = keyword_search(
-        query,
+        eff_query,
         K_TABLE,
         form=form,
         form_by_id=form_by_id,
         type_by_id=type_by_id,
         chunk_type="table",
+        tickers=tick_filter,
+        ticker_by_id=ticker_by_id,
     )
 
     fused_ids = reciprocal_rank_fusion(
@@ -417,19 +591,33 @@ def retrieve(query: str, form: str | None = None) -> list[dict]:
 
     top_candidates = fused_ids[: K_VECTOR + K_BM25 + K_TABLE]
 
-    return rerank(query,top_candidates, chunk_lookup, FINAL_K)
+    return rerank(eff_query, top_candidates, chunk_lookup, FINAL_K, mode=reranker_mode)
 
 
 def main():
-    if len(sys.argv) < 2:
-        print('Usage: python src/retrieve.py "your question here"')
-        sys.exit(1)
+    import argparse
 
-    query = sys.argv[1]
+    ap = argparse.ArgumentParser()
+    ap.add_argument("query")
+    ap.add_argument("--no-rewrite", action="store_true")
+    ap.add_argument("--no-router", action="store_true")
+    ap.add_argument("--legacy-rerank", action="store_true")
+    args = ap.parse_args()
 
-    results = retrieve(query)
+    query = args.query
+
+    results = retrieve(
+        query,
+        rewrite=not args.no_rewrite,
+        use_router=not args.no_router,
+        reranker_mode="legacy" if args.legacy_rerank else "table-aware",
+    )
 
     print(f"\nTop {len(results)} chunks for: {query}\n")
+    if getattr(retrieve, "last_rewrite", query) != query:
+        print(f"Rewritten retrieval query: {retrieve.last_rewrite}")
+    if getattr(retrieve, "last_tickers", []):
+        print(f"Routed tickers: {retrieve.last_tickers}")
 
     for i, chunk in enumerate(results, 1):
         preview = chunk["text"][:200].replace("\n", " ")

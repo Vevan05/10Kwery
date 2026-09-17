@@ -1,92 +1,62 @@
 [
-  {
-    "question": "What percentage of total revenue came from the Services segment, and how has that mix shifted over recent periods?",
-    "expected_tickers": ["AAPL"],
-    "expected_keywords": ["Services"]
-  },
-  {
-    "question": "What was the operating margin for the Data Center segment in the most recent quarter?",
-    "expected_tickers": ["NVDA"],
-    "expected_keywords": ["Data Center"]
-  },
-  {
-    "question": "How much revenue did the AWS segment generate, and what was its operating income?",
-    "expected_tickers": ["AMZN"],
-    "expected_keywords": ["AWS"]
-  },
-  {
-    "question": "What does the filing say about Reality Labs' operating losses?",
-    "expected_tickers": ["META"],
-    "expected_keywords": ["Reality Labs"]
-  },
-  {
-    "question": "What was the growth rate for the Intelligent Cloud / Azure business?",
-    "expected_tickers": ["MSFT"],
-    "expected_keywords": ["Azure", "cloud"]
-  },
-  {
-    "question": "What percentage of revenue is attributable to YouTube advertising?",
-    "expected_tickers": ["GOOGL"],
-    "expected_keywords": ["YouTube"]
-  },
-  {
-    "question": "What does the filing disclose about the Energy generation and storage segment's gross margin?",
-    "expected_tickers": ["TSLA"],
-    "expected_keywords": ["Energy generation"]
-  },
-  {
-    "question": "According to Apple's 10-K, what risks does the company disclose related to reliance on a limited number of contract manufacturers?",
-    "expected_tickers": ["AAPL"],
-    "expected_keywords": ["manufactur"]
-  },
-  {
-    "question": "According to Tesla's 10-K, what risks does the company disclose related to reliance on a limited number of suppliers for battery materials?",
-    "expected_tickers": ["TSLA"],
-    "expected_keywords": ["batter", "suppl"]
-  },
-  {
-    "question": "According to Nvidia's 10-K, what risks does the company disclose related to reliance on a limited number of third-party foundries for chip manufacturing?",
-    "expected_tickers": ["NVDA"],
-    "expected_keywords": ["foundr", "manufactur"]
-  },
-  {
-    "question": "What was diluted earnings per share in Apple's most recently filed 10-Q?",
-    "expected_tickers": ["AAPL"],
-    "expected_keywords": ["diluted", "per share"]
-  },
-  {
-    "question": "What was the year-over-year change in Meta's total headcount as disclosed in its most recent 10-K?",
-    "expected_tickers": ["META"],
-    "expected_keywords": ["employee", "headcount"]
-  },
-  {
-    "question": "What did Amazon's most recent 10-Q report for net cash provided by operating activities?",
-    "expected_tickers": ["AMZN"],
-    "expected_keywords": ["operating activities", "cash"]
-  },
-  {
-    "question": "What was Microsoft's effective tax rate as disclosed in its most recent 10-K?",
-    "expected_tickers": ["MSFT"],
-    "expected_keywords": ["tax rate"]
-  },
-  {
-    "question": "Compare the gross margin trends of Nvidia and Tesla as disclosed in their most recent filings.",
-    "expected_tickers": ["NVDA", "TSLA"],
-    "expected_keywords": ["gross margin"]
-  },
-  {
-    "question": "Compare how Amazon and Meta each describe risks related to reliance on advertising or third-party platforms.",
-    "expected_tickers": ["AMZN", "META"],
-    "expected_keywords": ["advertis"]
-  },
-  {
-    "question": "What does the filing say about investments or risks related to autonomous vehicle / self-driving technology?",
-    "expected_tickers": ["TSLA", "NVDA"],
-    "expected_keywords": ["autonomous", "self-driving"]
-  },
-  {
-    "question": "What does Boeing's most recent 10-K say about its dividend policy?",
-    "expected_tickers": [],
-    "expected_keywords": []
-  }
+  {"id": "q01", "question": "What percentage of total revenue came from the Services segment, and how has that mix shifted over recent periods?", "expected_tickers": ["AAPL"], "expected_keywords": ["Services"], "split": "dev", "type": "segment", "requires_table": true},
+  {"id": "q02", "question": "What was the operating margin for the Data Center segment in the most recent quarter?", "expected_tickers": ["NVDA"], "expected_keywords": ["Data Center"], "split": "dev", "type": "segment", "requires_table": true},
+  {"id": "q03", "question": "How much revenue did the AWS segment generate, and what was its operating income?", "expected_tickers": ["AMZN"], "expected_keywords": ["AWS"], "split": "dev", "type": "segment", "requires_table": true},
+  {"id": "q04", "question": "What does the filing say about Reality Labs' operating losses?", "expected_tickers": ["META"], "expected_keywords": ["Reality Labs"], "split": "dev", "type": "segment", "requires_table": false},
+  {"id": "q05", "question": "What was the growth rate for the Intelligent Cloud / Azure business?", "expected_tickers": ["MSFT"], "expected_keywords": ["Azure", "cloud"], "split": "dev", "type": "segment", "requires_table": true},
+  {"id": "q06", "question": "What percentage of revenue is attributable to YouTube advertising?", "expected_tickers": ["GOOGL"], "expected_keywords": ["YouTube"], "split": "dev", "type": "segment", "requires_table": true},
+  {"id": "q07", "question": "What does the filing disclose about the Energy generation and storage segment's gross margin?", "expected_tickers": ["TSLA"], "expected_keywords": ["Energy generation"], "split": "dev", "type": "segment", "requires_table": false},
+  {"id": "q08", "question": "According to Apple's 10-K, what risks does the company disclose related to reliance on a limited number of contract manufacturers?", "expected_tickers": ["AAPL"], "expected_keywords": ["manufactur"], "split": "dev", "type": "risk", "requires_table": false},
+  {"id": "q09", "question": "According to Tesla's 10-K, what risks does the company disclose related to reliance on a limited number of suppliers for battery materials?", "expected_tickers": ["TSLA"], "expected_keywords": ["batter", "suppl"], "split": "dev", "type": "risk", "requires_table": false},
+  {"id": "q10", "question": "According to Nvidia's 10-K, what risks does the company disclose related to reliance on a limited number of third-party foundries for chip manufacturing?", "expected_tickers": ["NVDA"], "expected_keywords": ["foundr", "manufactur"], "split": "dev", "type": "risk", "requires_table": false},
+  {"id": "q11", "question": "What was diluted earnings per share in Apple's most recently filed 10-Q?", "expected_tickers": ["AAPL"], "expected_keywords": ["diluted", "per share"], "split": "dev", "type": "numeric", "requires_table": true},
+  {"id": "q12", "question": "What was the year-over-year change in Meta's total headcount as disclosed in its most recent 10-K?", "expected_tickers": ["META"], "expected_keywords": ["employee", "headcount"], "split": "dev", "type": "numeric", "requires_table": false},
+  {"id": "q13", "question": "What did Amazon's most recent 10-Q report for net cash provided by operating activities?", "expected_tickers": ["AMZN"], "expected_keywords": ["operating activities", "cash"], "split": "dev", "type": "numeric", "requires_table": true},
+  {"id": "q14", "question": "What was Microsoft's effective tax rate as disclosed in its most recent 10-K?", "expected_tickers": ["MSFT"], "expected_keywords": ["tax rate"], "split": "dev", "type": "numeric", "requires_table": false},
+  {"id": "q15", "question": "Compare the gross margin trends of Nvidia and Tesla as disclosed in their most recent filings.", "expected_tickers": ["NVDA", "TSLA"], "expected_keywords": ["gross margin"], "split": "dev", "type": "compare", "requires_table": true},
+  {"id": "q16", "question": "Compare how Amazon and Meta each describe risks related to reliance on advertising or third-party platforms.", "expected_tickers": ["AMZN", "META"], "expected_keywords": ["advertis"], "split": "dev", "type": "compare", "requires_table": false},
+  {"id": "q17", "question": "What does the filing say about investments or risks related to autonomous vehicle / self-driving technology?", "expected_tickers": ["TSLA", "NVDA"], "expected_keywords": ["autonomous", "self-driving"], "split": "dev", "type": "compare", "requires_table": false},
+  {"id": "q18", "question": "What does Boeing's most recent 10-K say about its dividend policy?", "expected_tickers": [], "expected_keywords": [], "split": "dev", "type": "refusal", "requires_table": false},
+  {"id": "h01", "question": "Services segment", "expected_tickers": ["AAPL"], "expected_keywords": ["Services"], "split": "heldout", "type": "vague-rewrite", "requires_table": true},
+  {"id": "h02", "question": "How did cloud grow?", "expected_tickers": ["MSFT", "AMZN"], "expected_keywords": ["cloud", "Azure", "AWS"], "split": "heldout", "type": "vague-rewrite", "requires_table": false},
+  {"id": "h03", "question": "What about energy margins?", "expected_tickers": ["TSLA"], "expected_keywords": ["Energy", "margin"], "split": "heldout", "type": "vague-rewrite", "requires_table": false},
+  {"id": "h04", "question": "Tell me about the Data Center business performance.", "expected_tickers": ["NVDA"], "expected_keywords": ["Data Center"], "split": "heldout", "type": "vague-rewrite", "requires_table": false},
+  {"id": "h05", "question": "What was Apple's R&D spending trend over recent filings?", "expected_tickers": ["AAPL"], "expected_keywords": ["research", "development"], "split": "heldout", "type": "numeric", "requires_table": true},
+  {"id": "h06", "question": "What was Nvidia's gross margin in its most recent 10-K?", "expected_tickers": ["NVDA"], "expected_keywords": ["gross margin"], "split": "heldout", "type": "numeric", "requires_table": true},
+  {"id": "h07", "question": "What was Tesla's automotive gross margin excluding regulatory credits?", "expected_tickers": ["TSLA"], "expected_keywords": ["automotive", "gross margin"], "split": "heldout", "type": "numeric", "requires_table": true},
+  {"id": "h08", "question": "What YouTube advertising revenue did Alphabet report?", "expected_tickers": ["GOOGL"], "expected_keywords": ["YouTube"], "split": "heldout", "type": "router-alias", "requires_table": true},
+  {"id": "h09", "question": "How did Facebook's Reality Labs losses change year over year?", "expected_tickers": ["META"], "expected_keywords": ["Reality Labs"], "split": "heldout", "type": "router-alias", "requires_table": true},
+  {"id": "h10", "question": "What does Google's 10-K say about YouTube ad revenue?", "expected_tickers": ["GOOGL"], "expected_keywords": ["YouTube"], "split": "heldout", "type": "router-alias", "requires_table": true},
+  {"id": "h11", "question": "According to Microsoft's 10-Q, what was diluted earnings per share?", "expected_tickers": ["MSFT"], "expected_keywords": ["diluted", "per share"], "split": "heldout", "type": "form-filter", "requires_table": true},
+  {"id": "h12", "question": "What did Tesla's most recent 10-Q disclose about automotive revenue?", "expected_tickers": ["TSLA"], "expected_keywords": ["automotive", "revenue"], "split": "heldout", "type": "form-filter", "requires_table": true},
+  {"id": "h13", "question": "In its annual report, what does Amazon say about AWS operating income?", "expected_tickers": ["AMZN"], "expected_keywords": ["AWS", "operating income"], "split": "heldout", "type": "form-filter", "requires_table": true},
+  {"id": "h14", "question": "What risks does Alphabet disclose about competition in search and advertising?", "expected_tickers": ["GOOGL"], "expected_keywords": ["competition", "advertis"], "split": "heldout", "type": "risk", "requires_table": false},
+  {"id": "h15", "question": "What does Meta's 10-K say about risks from regulation and content moderation?", "expected_tickers": ["META"], "expected_keywords": ["regulat"], "split": "heldout", "type": "risk", "requires_table": false},
+  {"id": "h16", "question": "What supply-chain risks does Apple disclose beyond contract manufacturers?", "expected_tickers": ["AAPL"], "expected_keywords": ["supply", "risk"], "split": "heldout", "type": "risk", "requires_table": false},
+  {"id": "h17", "question": "Compare R&D spending across Apple and Microsoft.", "expected_tickers": ["AAPL", "MSFT"], "expected_keywords": ["research", "development"], "split": "heldout", "type": "compare", "requires_table": true},
+  {"id": "h18", "question": "Compare how Nvidia and Microsoft describe AI infrastructure demand.", "expected_tickers": ["NVDA", "MSFT"], "expected_keywords": ["AI", "demand"], "split": "heldout", "type": "compare", "requires_table": false},
+  {"id": "h19", "question": "What does Ford's 10-K say about EV battery costs?", "expected_tickers": [], "expected_keywords": [], "split": "heldout", "type": "refusal", "requires_table": false},
+  {"id": "h20", "question": "What dividend did JPMorgan declare in its most recent 10-Q?", "expected_tickers": [], "expected_keywords": [], "split": "heldout", "type": "refusal", "requires_table": false},
+  {"id": "h21", "question": "What did Boeing report for free cash flow?", "expected_tickers": [], "expected_keywords": [], "split": "heldout", "type": "refusal", "requires_table": false},
+  {"id": "h22", "question": "What was Meta's headcount at the end of the most recent fiscal year?", "expected_tickers": ["META"], "expected_keywords": ["employee", "headcount"], "split": "heldout", "type": "numeric", "requires_table": false},
+  {"id": "h23", "question": "How many employees did Alphabet report in its latest 10-K?", "expected_tickers": ["GOOGL"], "expected_keywords": ["employee"], "split": "heldout", "type": "numeric", "requires_table": false},
+  {"id": "h24", "question": "What was Amazon's headcount trend in the most recent 10-K?", "expected_tickers": ["AMZN"], "expected_keywords": ["employee", "headcount"], "split": "heldout", "type": "numeric", "requires_table": false},
+  {"id": "h25", "question": "What was Apple's effective tax rate and provision for income taxes?", "expected_tickers": ["AAPL"], "expected_keywords": ["tax"], "split": "heldout", "type": "numeric", "requires_table": true},
+  {"id": "h26", "question": "What operating cash flow did Microsoft report in its most recent 10-Q?", "expected_tickers": ["MSFT"], "expected_keywords": ["operating", "cash"], "split": "heldout", "type": "numeric", "requires_table": true},
+  {"id": "h27", "question": "What does Nvidia's filing say about export controls affecting Data Center sales?", "expected_tickers": ["NVDA"], "expected_keywords": ["export", "control"], "split": "heldout", "type": "risk", "requires_table": false},
+  {"id": "h28", "question": "What does Tesla disclose about warranty reserves and service costs?", "expected_tickers": ["TSLA"], "expected_keywords": ["warranty"], "split": "heldout", "type": "risk", "requires_table": false},
+  {"id": "h29", "question": "What share repurchases did Apple disclose in its most recent 10-Q?", "expected_tickers": ["AAPL"], "expected_keywords": ["repurchase"], "split": "heldout", "type": "numeric", "requires_table": true},
+  {"id": "h30", "question": "What capex guidance does Microsoft disclose for AI datacenters?", "expected_tickers": ["MSFT"], "expected_keywords": ["capital", "expenditure"], "split": "heldout", "type": "numeric", "requires_table": false},
+  {"id": "h31", "question": "Follow-up: and how about Microsoft's cloud margins?", "expected_tickers": ["MSFT"], "expected_keywords": ["cloud", "margin"], "split": "heldout", "type": "multiturn", "requires_table": false},
+  {"id": "h32", "question": "Follow-up: what were its operating expenses?", "expected_tickers": ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA"], "expected_keywords": ["operating", "expenses"], "split": "heldout", "type": "multiturn", "requires_table": false},
+  {"id": "h33", "question": "What were total net sales by product category for Apple?", "expected_tickers": ["AAPL"], "expected_keywords": ["net sales", "iPhone"], "split": "heldout", "type": "segment", "requires_table": true},
+  {"id": "h34", "question": "Break down Google Services vs Google Cloud revenue.", "expected_tickers": ["GOOGL"], "expected_keywords": ["Google Services", "Google Cloud"], "split": "heldout", "type": "segment", "requires_table": true},
+  {"id": "h35", "question": "What was AWS's operating margin percentage?", "expected_tickers": ["AMZN"], "expected_keywords": ["AWS", "margin"], "split": "heldout", "type": "numeric", "requires_table": true},
+  {"id": "h36", "question": "How does Meta break out Family of Apps vs Reality Labs revenue?", "expected_tickers": ["META"], "expected_keywords": ["Family of Apps", "Reality Labs"], "split": "heldout", "type": "segment", "requires_table": true},
+  {"id": "h37", "question": "What inventory or purchase commitments does Tesla disclose?", "expected_tickers": ["TSLA"], "expected_keywords": ["purchase", "commitment"], "split": "heldout", "type": "risk", "requires_table": false},
+  {"id": "h38", "question": "What backlog or remaining performance obligations does Microsoft report?", "expected_tickers": ["MSFT"], "expected_keywords": ["remaining performance"], "split": "heldout", "type": "numeric", "requires_table": false},
+  {"id": "h39", "question": "Compare stock-based compensation across Meta and Alphabet.", "expected_tickers": ["META", "GOOGL"], "expected_keywords": ["stock-based compensation"], "split": "heldout", "type": "compare", "requires_table": true},
+  {"id": "h40", "question": "Which company grew revenue faster last year, Nvidia or Microsoft?", "expected_tickers": ["NVDA", "MSFT"], "expected_keywords": ["revenue"], "split": "heldout", "type": "compare", "requires_table": true},
+  {"id": "h41", "question": "What does Amazon say about Prime membership and subscription revenue?", "expected_tickers": ["AMZN"], "expected_keywords": ["subscription", "Prime"], "split": "heldout", "type": "segment", "requires_table": true},
+  {"id": "h42", "question": "What legal proceedings does Apple list as material?", "expected_tickers": ["AAPL"], "expected_keywords": ["legal", "proceedings"], "split": "heldout", "type": "risk", "requires_table": false}
 ]
