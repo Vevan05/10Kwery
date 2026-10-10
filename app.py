@@ -155,37 +155,129 @@ def render_sources(payload: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
+CUSTOM_CSS = """
+/* One centred column instead of the default wide gutters. */
+gradio-app { max-width: 1220px; margin: 0 auto; }
+
+/* Header: title and status badge sit on one line against a hairline rule. */
+#kw-header {
+    align-items: flex-end;
+    gap: 16px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border-color-primary, #ffffff1f);
+}
+#kw-title h1 {
+    font-size: 1.3rem;
+    font-weight: 650;
+    letter-spacing: -0.02em;
+    margin: 0;
+    line-height: 1.2;
+}
+#kw-title p {
+    font-size: 0.8rem;
+    opacity: 0.65;
+    margin: 2px 0 0 0;
+}
+#kw-status { text-align: right; margin: 0; font-size: 0.78rem; }
+#kw-status p { margin: 0; }
+
+/* Sidebar: a quiet card, only as tall as its contents. */
+#kw-side {
+    gap: 10px;
+    padding: 12px 14px;
+    border: 1px solid var(--border-color-primary, #ffffff1f);
+    border-radius: 10px;
+    background: var(--background-fill-secondary, #ffffff08);
+}
+#kw-side h3 {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    opacity: 0.55;
+    margin: 0 0 4px 0;
+}
+#kw-side p { font-size: 0.8rem; line-height: 1.45; margin: 0; }
+
+/* Toolbar: buttons sit tight under the prompt, stats pinned to the right. */
+#kw-toolbar { align-items: center; gap: 8px; margin-top: -4px; }
+#kw-latency {
+    margin-left: auto;
+    text-align: right;
+    font-size: 0.76rem;
+    opacity: 0.7;
+    min-width: 90px;
+}
+#kw-latency p { margin: 0; }
+
+/* Answer: the one surface framed like a document. */
+#kw-answer {
+    border: 1px solid var(--border-color-primary, #ffffff1f);
+    border-radius: 10px;
+    padding: 14px 16px;
+    background: var(--background-fill-secondary, #ffffff08);
+    min-height: 0;
+}
+#kw-answer p:first-child { margin-top: 0; }
+#kw-answer p:last-child { margin-bottom: 0; }
+
+#kw-foot { font-size: 0.72rem; opacity: 0.45; margin: 4px 0 0 0; }
+#kw-foot p { margin: 0; }
+"""
+
+
 def build_demo() -> gr.Blocks:
     with gr.Blocks(title="10-Kwery") as demo:
-        gr.Markdown(
-            "# 10-Kwery\n"
-            "Ask questions about SEC 10-K and 10-Q filings. Answers are grounded "
-            "in retrieved excerpts and every claim carries a bracketed citation "
-            "you can check against the sources below."
-        )
+        with gr.Row(elem_id="kw-header"):
+            with gr.Column(scale=1, elem_id="kw-title", min_width=0):
+                gr.Markdown("# 10-Kwery")
+                gr.Markdown(
+                    "Citation-grounded Q&A over SEC 10-K and 10-Q filings"
+                )
 
-        status = gr.Markdown("_Loading retrieval index..._")
-        companies_box = gr.Markdown("")
+            with gr.Column(scale=1, min_width=0):
+                status = gr.Markdown(
+                    "Loading retrieval index…", elem_id="kw-status"
+                )
 
         with gr.Row():
-            with gr.Column(scale=3):
+            with gr.Column(scale=11, min_width=0, elem_id="kw-main"):
                 question = gr.Textbox(
                     label="Question",
                     placeholder=EXAMPLE_QUESTIONS[0],
                     lines=2,
+                    elem_id="kw-question",
                 )
-                with gr.Row():
-                    ask_btn = gr.Button("Ask", variant="primary")
-                    clear_btn = gr.Button("New chat")
 
-                answer = gr.Markdown()
-                sources = gr.Markdown()
+                with gr.Row(elem_id="kw-toolbar"):
+                    ask_btn = gr.Button("Ask", variant="primary", size="sm")
+                    clear_btn = gr.Button("New chat", size="sm")
+                    latency = gr.Markdown(elem_id="kw-latency")
 
-            with gr.Column(scale=1):
-                gr.Examples(
-                    examples=EXAMPLE_QUESTIONS,
-                    inputs=question,
-                    label="Example questions",
+                answer = gr.Markdown(elem_id="kw-answer")
+
+                with gr.Accordion(
+                    "Sources", open=False, elem_id="kw-sources"
+                ) as sources_accordion:
+                    sources = gr.Markdown("_Ask a question to see sources._")
+
+            with gr.Column(scale=5, min_width=0, elem_id="kw-side"):
+                with gr.Group():
+                    gr.Markdown("### Indexed")
+                    companies_box = gr.Markdown("_loading…_")
+
+                with gr.Group():
+                    gr.Markdown("### Example questions")
+                    gr.Examples(
+                        examples=EXAMPLE_QUESTIONS,
+                        inputs=[question],
+                        label="",
+                        elem_id="kw-examples",
+                    )
+
+                gr.Markdown(
+                    "Answers come only from the retrieved excerpts; questions "
+                    "outside the corpus are refused.",
+                    elem_id="kw-foot",
                 )
 
         history_state = gr.State(value=[])
@@ -197,22 +289,22 @@ def build_demo() -> gr.Blocks:
             except Exception as e:
                 logger.exception("Warm-up failed")
                 return f"**Startup failed:** {e}", ""
-
             companies = ", ".join(service.companies()) or "none"
-            return "**Ready.** Retrieval index loaded.", f"**Indexed:** {companies}"
+            return "**Ready.**", companies
 
         def on_ask(question: str, history: list, request: gr.Request):
             if not question or not question.strip():
-                return history, "", "", "Please enter a question."
+                return history, "", "", "Please enter a question.", "-"
 
             allowed, retry_after = _limiter.check(client_key(request))
             if not allowed:
                 return (
                     history,
                     "",
-                    "",
+                    "_Ask a question to see sources._",
                     "Too many requests — the free LLM tier is rate limited. "
                     f"Try again in about {retry_after:.0f}s.",
+                    "rate limited",
                 )
 
             payload = get_service().ask(question.strip(), history=history)
@@ -230,30 +322,37 @@ def build_demo() -> gr.Blocks:
                 },
             ]
 
-            return history, render_answer(payload), render_sources(payload), ""
+            return (
+                history,
+                render_answer(payload),
+                render_sources(payload),
+                "",
+                f"{payload.get('latency_s', 0):.1f}s",
+            )
 
         def on_clear():
-            return [], "", "", ""
+            return [], "", "_Ask a question to see sources._", "", "-"
 
         demo.load(load_status, outputs=[status, companies_box])
+
+        click_outputs = [history_state, answer, sources, question, latency]
 
         ask_btn.click(
             on_ask,
             inputs=[question, history_state],
-            outputs=[history_state, answer, sources, question],
+            outputs=click_outputs,
         )
         question.submit(
             on_ask,
             inputs=[question, history_state],
-            outputs=[history_state, answer, sources, question],
+            outputs=click_outputs,
         )
         clear_btn.click(
             on_clear,
-            outputs=[history_state, answer, sources, question],
+            outputs=click_outputs,
         )
 
     return demo
-
 
 # ---------------------------------------------------------------------------
 # JSON API
@@ -343,15 +442,16 @@ def build_app() -> FastAPI:
     registration order, so ``/api/*`` and ``/health`` must not fall through to
     the Gradio root handler.
 
-    ``demo.queue()`` is mandatory here, not just a concurrency nicety: it is
-    what enables Gradio's session handling, and without it ``gr.State`` is never
-    serialised back to the client - so follow-up questions would silently lose
-    their conversation history.
+    ``css`` goes to ``mount_gradio_app``, not to ``gr.Blocks``: Gradio 6 moved
+    theme/css/js/head from the Blocks constructor to launch() or the mount, and
+    silently ignores them if passed there instead.
     """
     api = create_api_app()
     demo = build_demo()
     demo.queue(default_concurrency_limit=MAX_CONCURRENT_REQUESTS)
-    return gr.mount_gradio_app(api, demo, path="/")
+    return gr.mount_gradio_app(
+        api, demo, path="/", css=CUSTOM_CSS
+    )
 
 
 app = build_app()
