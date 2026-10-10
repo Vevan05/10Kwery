@@ -1,26 +1,36 @@
 import hashlib
 import json
+import logging
 import os
 import re
 import sys
 import time
-from pathlib import Path
 
 from dotenv import load_dotenv
 
+from config import CACHE_PATH, ENABLE_FOLLOWUP_CONDENSE
 from entailment import verify_citations
-from retrieve import detect_form_filter, indexed_companies, refusal_reason, retrieve
+from retrieve import (
+    detect_form_filter,
+    last_tickers,
+    last_rewrite,
+    refusal_reason,
+    retrieve,
+)
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 MODEL = "openai/gpt-oss-120b"
 MAX_TOKENS = 1024
 REQUEST_DELAY = float(os.getenv("GROQ_REQUEST_DELAY", "2.5"))
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 2.0
-CACHE_PATH = Path("eval/answers_cache.json")
 
-FANCY_CITATION_RE = re.compile(r"【(\d+)†[^】]*】")
+# The model sometimes emits full-width-bracket citations, with or without the
+# cross-reference dagger that some providers insert. Both must become [4].
+FANCY_CITATION_RE = re.compile(r"【(\d+)†?[^】]*】")
 
 SYSTEM_PROMPT = """You are a financial research assistant that answers questions using ONLY the provided SEC filing excerpts below. Follow these rules exactly:
 
@@ -58,7 +68,7 @@ def clear_answer_cache() -> int:
     if CACHE_PATH.exists():
         n = len(json.loads(CACHE_PATH.read_text()))
         CACHE_PATH.unlink()
-    print(f"Cleared {n} cached answers.")
+    logger.info("Cleared %d cached answers.", n)
     return n
 
 
@@ -111,11 +121,17 @@ def _api_call_with_retry(messages: list[dict], stream: bool = False) -> str | No
 
         except RateLimitError:
             wait = RETRY_BASE_DELAY * (2 ** (attempt - 1))
-            print(f"  Rate limited (attempt {attempt}/{MAX_RETRIES}), waiting {wait:.1f}s ...")
+            logger.warning(
+                "Rate limited (attempt %d/%d), waiting %.1fs ...",
+                attempt, MAX_RETRIES, wait,
+            )
             time.sleep(wait)
         except Exception as e:
             wait = RETRY_BASE_DELAY * (2 ** (attempt - 1))
-            print(f"  Error on attempt {attempt}/{MAX_RETRIES}: {e!s}, waiting {wait:.1f}s ...")
+            logger.warning(
+                "Error on attempt %d/%d: %s, waiting %.1fs ...",
+                attempt, MAX_RETRIES, e, wait,
+            )
             time.sleep(wait)
 
     raise RuntimeError(f"Failed to get Groq response after {MAX_RETRIES} attempts.")
@@ -161,7 +177,7 @@ def generate_answer(
     key = _cache_key(query, chunks) if use_cache else None
 
     if use_cache and key in cache:
-        print(f"  [cache hit] returning cached answer for query")
+        logger.debug("Cache hit; returning cached answer.")
         return cache[key]
 
     messages = _build_messages(query, chunks, history)
@@ -171,7 +187,7 @@ def generate_answer(
     if key:
         cache[key] = content
         _save_cache(cache)
-        print(f"  [cache saved] {len(cache)} total entries")
+        logger.debug("Cache saved; %d total entries.", len(cache))
 
     return content
 
@@ -221,98 +237,119 @@ def answer_query(
     verify_entailment: bool = False,
     use_llm_judge: bool = False,
     use_cache: bool = True,
+    quiet: bool = False,
     **retrieve_kwargs,
 ) -> dict | None:
-    print(f"\nRetrieving context for: {query}")
+    """Answer a query from the indexed corpus.
+
+    ``quiet`` suppresses the human-facing stdout blocks. Callers with their own
+    rendering surface (the web service in src/service.py) set it and read the
+    returned dict instead of parsing printed output.
+    """
+    logger.info("Retrieving context for: %s", query)
 
     history = session.history_for_retrieval() if session else None
 
     eff_for_log = query
-    if session and len(session.turns) > 0:
+    if session and len(session.turns) > 0 and ENABLE_FOLLOWUP_CONDENSE:
         try:
             from query_rewrite import condense_followup
             eff_for_log = condense_followup(session.history_for_retrieval(), query)
             if eff_for_log != query:
-                print(f"Condensed follow-up → retrieval query: {eff_for_log}")
+                logger.info("Condensed follow-up -> retrieval query: %s", eff_for_log)
         except Exception:
             pass
 
     form_filter = detect_form_filter(query)
     if form_filter:
-        print(f"Detected form filter: {form_filter} — restricting retrieval to {form_filter} filings")
+        logger.info(
+            "Detected form filter: %s - restricting retrieval to %s filings",
+            form_filter, form_filter,
+        )
 
     chunks = retrieve(query, history=history, **retrieve_kwargs)
-    if getattr(retrieve, "last_rewrite", query) != query:
-        print(f"Rewritten retrieval query: {retrieve.last_rewrite}")
-    if getattr(retrieve, "last_tickers", []):
-        print(f"Routed companies: {retrieve.last_tickers}")
+
+    rewritten = last_rewrite()
+    if rewritten and rewritten != query:
+        logger.info("Rewritten retrieval query: %s", rewritten)
+    if last_tickers():
+        logger.info("Routed companies: %s", last_tickers())
+
     if not chunks:
-        print("No relevant chunks found in the index.")
+        logger.warning("No relevant chunks found in the index.")
         return None
 
-    print(f"Retrieved {len(chunks)} candidate chunks.")
+    logger.info("Retrieved %d candidate chunks.", len(chunks))
 
     refusal = refusal_reason(query, chunks)
     if refusal:
-        print("\n" + "=" * 70)
-        print("CANNOT ANSWER FROM INDEX")
-        print("=" * 70)
-        print(f"This question can't be answered with the indexed filings: {refusal}.")
-        print(f"Indexed companies: {', '.join(indexed_companies())}")
+        logger.warning("Refusing to answer: %s", refusal)
         return {"refused": True, "reason": refusal, "chunks": chunks}
 
-    print("Generating answer...\n")
+    if not quiet:
+        print("Generating answer...")
 
     if stream:
-        print("=" * 70)
-        print("ANSWER (streaming)")
-        print("=" * 70)
+        if not quiet:
+            print("=" * 70)
+            print("ANSWER (streaming)")
+            print("=" * 70)
         parts = []
         for delta in generate_answer_stream(query, chunks, history):
-            print(delta, end="", flush=True)
+            if not quiet:
+                print(delta, end="", flush=True)
             parts.append(delta)
         answer = FANCY_CITATION_RE.sub(
             lambda m: f"[{m.group(1)}]", "".join(parts)
         )
     else:
         answer = generate_answer(query, chunks, history, use_cache=use_cache)
-        print("=" * 70)
-        print("ANSWER")
-        print("=" * 70)
-        print(answer)
+        if not quiet:
+            print("=" * 70)
+            print("ANSWER")
+            print("=" * 70)
+            print(answer)
 
     bad_citations = check_citations(answer, len(chunks))
     if bad_citations:
-        print(
-            f"WARNING: answer cites source number(s) {bad_citations} that don't "
-            f"exist in the {len(chunks)} retrieved chunks — possible hallucinated "
-            f"citation.\n"
+        logger.warning(
+            "Answer cites source number(s) %s that don't exist in the %d "
+            "retrieved chunks - possible hallucinated citation.",
+            bad_citations, len(chunks),
         )
 
     entail = None
     if verify_entailment:
         entail = verify_citations(answer, chunks, use_llm=use_llm_judge)
-        print(
-            f"Entailment: {entail['supported_spans']}/{entail['total_cited_spans']} "
-            f"spans supported (rate {entail['entailment_rate']:.0%})"
+        logger.info(
+            "Entailment: %d/%d spans supported (rate %.0f%%)",
+            entail["supported_spans"], entail["total_cited_spans"],
+            entail["entailment_rate"] * 100,
         )
         for u in entail["unsupported"]:
-            print(f"  UNSUPPORTED {u['cites']}: {u['sentence'][:120]}...")
+            logger.info("Unsupported %s: %s...", u["cites"], u["sentence"][:120])
 
-    print("\n" + "=" * 70)
-    print("SOURCES")
-    print("=" * 70)
     for i, chunk in enumerate(chunks, 1):
-        print(
-            f"[{i}] {chunk['ticker']} {chunk['form']} filed {chunk['filing_date']} "
-            f"— {chunk['section'][:70]}"
+        logger.info(
+            "SOURCE [%d] %s %s filed %s - %s",
+            i, chunk["ticker"], chunk["form"], chunk["filing_date"],
+            chunk["section"][:70],
         )
-        if chunk.get("source_url"):
-            print(f"    {chunk['source_url']}")
+
+    if not quiet:
+        print("\n" + "=" * 70)
+        print("SOURCES")
+        print("=" * 70)
+        for i, chunk in enumerate(chunks, 1):
+            print(
+                f"[{i}] {chunk['ticker']} {chunk['form']} filed {chunk['filing_date']} "
+                f"— {chunk['section'][:70]}"
+            )
+            if chunk.get("source_url"):
+                print(f"    {chunk['source_url']}")
 
     if session is not None:
-        tickers = list(getattr(retrieve, "last_tickers", []) or [])
-        session.add_user(query, tickers=tickers)
+        session.add_user(query, tickers=list(last_tickers()))
         session.add_assistant(answer)
 
     return {"answer": answer, "chunks": chunks, "entailment": entail}

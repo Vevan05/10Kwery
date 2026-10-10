@@ -28,7 +28,7 @@ The project demonstrates an end-to-end financial document retrieval pipeline con
 
 ```text
 10Kwery/
-├── README.md
+├── app.py                     # web server (Gradio UI + FastAPI JSON API)
 ├── requirements.txt
 ├── data/
 │   ├── filings/          # raw EDGAR HTML + metadata sidecars
@@ -36,6 +36,8 @@ The project demonstrates an end-to-end financial document retrieval pipeline con
 │   ├── chroma_db/        # ChromaDB vector index
 │   └── bm25_index.pkl    # BM25 keyword index
 ├── src/
+│   ├── config.py         # env-driven paths + logging setup
+│   ├── service.py        # web service layer (warm-up, concurrency, results)
 │   ├── ingestion.py
 │   ├── chunk.py
 │   ├── index.py
@@ -46,6 +48,11 @@ The project demonstrates an end-to-end financial document retrieval pipeline con
 │   ├── query_rewrite.py
 │   ├── router.py
 │   └── session.py
+├── deploy/
+│   ├── space_README.md   # Space landing page (carries YAML frontmatter)
+│   ├── prepare_dataset.py# stage + upload the retrieval index
+│   ├── push_space.py     # create the Space and deploy
+│   └── keepalive.yml     # cron that pings /health
 └── eval/
     └── qa_pairs.json     # 60 questions (18 dev + 42 heldout)
 ```
@@ -345,9 +352,111 @@ The free Groq tier has a tight rate limit (~30 RPM). To avoid timeouts:
 # Future Improvements
 
 - Optional two-stage reranking: a stronger cross-encoder arbitrating a MiniLM-shortlisted set
-- Web interface
 - Additional SEC filing types (8-K)
 - Batch evaluation with parallel API calls for faster large-scale runs
+
+
+# Deployment
+
+The project ships with a web front end (`app.py`) and everything needed to deploy
+it for free on a Hugging Face Space.
+
+## Why a Space
+
+The pipeline needs PyTorch, ChromaDB and two transformer models, which rules out
+every free host with under ~1 GB of RAM. Hosts offering a genuinely free,
+no-credit-card tier in 2026:
+
+| Host | Free resources | Verdict |
+|------|----------------|---------|
+| **Hugging Face Spaces** (CPU Basic) | 2 vCPU, **16 GB RAM**, 50 GB disk | Works |
+| Streamlit Community Cloud | 1 GB RAM | OOMs on `import torch` |
+| Koyeb free | 512 MB, 0.1 vCPU, card required | Impossible |
+| Render / Railway / Fly.io | No meaningful free tier | No |
+
+Two Space properties shape the deployment: the 50 GB runtime disk is **ephemeral**
+(wiped on every restart), and Docker Spaces now require a paid plan, so the app
+runs on the free Gradio SDK.
+
+Consequently the retrieval index cannot live in the container. It is published as
+a dataset and downloaded on boot (a no-op locally, where the files already exist).
+
+## One-time setup
+
+```bash
+# 1. Build the index locally (add more tickers in src/ingestion.py if you want)
+python src/ingestion.py
+python src/chunk.py
+python src/index.py --force
+
+# 2. Publish the index as a dataset
+HF_TOKEN=hf_... python deploy/prepare_dataset.py --repo-id you/10kwery-index
+
+# 3. Create the Space and push the app
+HF_TOKEN=hf_... python deploy/push_space.py --space-id you/10kwery
+```
+
+Then, on the Space's **Settings > Variables and secrets** page, add:
+
+| Name | Value | Why |
+|------|-------|-----|
+| `GROQ_API_KEY` | `gsk_...` | **Secret.** LLM access. |
+| `INDEX_DATASET` | `you/10kwery-index` | **Variable.** Where to fetch the index. |
+| `HF_TOKEN` | `hf_...` | Optional; raises download rate limits. |
+| `ENABLE_FOLLOWUP_CONDENSE` | `0` | Optional; saves one Groq call per follow-up. |
+| `MAX_CONCURRENT_REQUESTS` | `2` | Optional; matches the 2 available cores. |
+| `RATE_LIMIT_RPM` | `10` | Optional; per-client request budget. |
+
+Restart the Space once the values are in place. The first boot downloads ~277 MB
+and loads both models, so give it a couple of minutes before the first query.
+
+## Keeping it awake
+
+A Space sleeps after 48 hours without visitors and wakes with an empty disk,
+forcing an index re-download. `deploy/keepalive.yml` is a cron workflow that
+pings `/api/companies` every 40 hours. Copy it to `.github/workflows/` and set
+the `SPACE_URL` repository variable.
+
+## Endpoints
+
+| Endpoint | Purpose |
+|----------|---------|
+| `/` | Gradio UI |
+| `GET /health` | Readiness probe (`ready`, `load_error`) |
+| `GET /api/companies` | Indexed tickers |
+| `POST /api/query` | `{"question", "history":[]}` → answer + sources |
+
+```bash
+curl -X POST https://you-10kwery.hf.space/api/query \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"What drove Tesla automotive revenue growth in 2024?"}'
+```
+
+## Running the server locally
+
+```bash
+GROQ_API_KEY=gsk_... python app.py   # http://localhost:7860
+```
+
+Local runs skip the dataset download: `src/config.py` resolves the index from
+`data/` as before, so `python src/generate.py "..."` keeps working unchanged.
+
+## Deployment-specific behaviour
+
+Because the free tier is shared and small, the web defaults differ from the CLI:
+
+- **Query rewriting and LLM routing use the same defaults as the CLI.**
+  The rule-based router resolves the seven indexed tickers for free and only
+  calls the LLM when no alias matches, so most questions still cost one Groq
+  call. Set `ENABLE_FOLLOWUP_CONDENSE=0` to skip the extra condense call per
+  follow-up turn (its result is only logged, so nothing breaks).
+- **Requests are bounded two at a time** and rate limited per client. The Groq
+  free tier is ~30 RPM and a single query takes ~17 s on 2 cores, so the
+  semaphore is the real throttle.
+- **Pipelines logs go through `logging`**, not `print`, so concurrent requests
+  do not interleave output.
+- **The answer cache is disposable.** It lives under `CACHE_DIR` (defaults to
+  `eval/`) and resets with the container.
 
 
 # License

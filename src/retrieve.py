@@ -1,18 +1,24 @@
+import copy
 import json
+import logging
 import pickle
 import re
-import sys
+import threading
 from collections.abc import Sequence
 from pathlib import Path
+
 import numpy as np
 
 import chromadb
 from sentence_transformers import CrossEncoder, SentenceTransformer
 
+from config import BM25_PATH, CHROMA_DIR, CHUNKS_PATH
 
-CHUNKS_PATH = Path("data/chunks/chunks.jsonl")
-CHROMA_DIR = Path("data/chroma_db")
-BM25_PATH = Path("data/bm25_index.pkl")
+logger = logging.getLogger(__name__)
+
+# Per-thread retrieval trace (routed tickers, rewritten query). A server handles
+# several requests concurrently, so this must never be shared module state.
+_tls = threading.local()
 
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
@@ -164,21 +170,38 @@ STOPWORDS = frozenset(
 
 _embed_model = None
 _reranker_model = None
+_embed_lock = threading.Lock()
+_rerank_lock = threading.Lock()
 
 
 def get_embed_model():
+    """Load the bi-encoder once per process.
+
+    Guarded by a lock because SentenceTransformer's download-and-load step is
+    not safe to run concurrently from two request threads.
+    """
     global _embed_model
+
     if _embed_model is None:
-        print(f"Loading embedding model {EMBEDDING_MODEL}...")
-        _embed_model = SentenceTransformer(EMBEDDING_MODEL)
+        with _embed_lock:
+            if _embed_model is None:
+                logger.info("Loading embedding model %s...", EMBEDDING_MODEL)
+                _embed_model = SentenceTransformer(EMBEDDING_MODEL)
+                logger.info("Embedding model ready.")
+
     return _embed_model
 
 
 def get_reranker():
     global _reranker_model
+
     if _reranker_model is None:
-        print(f"Loading reranker model {RERANKER_MODEL}...")
-        _reranker_model = CrossEncoder(RERANKER_MODEL)
+        with _rerank_lock:
+            if _reranker_model is None:
+                logger.info("Loading reranker model %s...", RERANKER_MODEL)
+                _reranker_model = CrossEncoder(RERANKER_MODEL)
+                logger.info("Reranker model ready.")
+
     return _reranker_model
 
 
@@ -198,6 +221,31 @@ def load_chunk_lookup() -> dict[str, dict]:
                 lookup[chunk["chunk_id"]] = chunk
 
     return lookup
+
+
+_chunk_lookup_cache: dict[str, dict] | None = None
+_chunk_lookup_lock = threading.Lock()
+
+
+def get_chunk_lookup() -> dict[str, dict]:
+    """Return the chunk table, parsed once per process.
+
+    Parsing 15k JSON lines costs seconds, so a web deployment must not repeat
+    it per request. The returned dict is shared: treat entries as read-only and
+    shallow-copy (see rerank) before attaching per-request scores.
+    """
+    global _chunk_lookup_cache
+
+    if _chunk_lookup_cache is None:
+        with _chunk_lookup_lock:
+            if _chunk_lookup_cache is None:
+                logger.info("Loading chunk lookup from %s...", CHUNKS_PATH)
+                _chunk_lookup_cache = load_chunk_lookup()
+                logger.info(
+                    "Chunk lookup ready (%d chunks).", len(_chunk_lookup_cache)
+                )
+
+    return _chunk_lookup_cache
 
 
 def embed_query(query: str) -> np.ndarray:
@@ -224,6 +272,29 @@ def detect_form_filter(query: str) -> str | None:
     return forms.pop() if len(forms) == 1 else None
 
 
+_chroma_client = None
+_chroma_lock = threading.Lock()
+
+
+def get_chroma_client():
+    """Return a shared Chroma persistent client.
+
+    Constructing a PersistentClient rewrites the index directory, so it is
+    deliberately created once per process instead of on every query (the
+    pipeline issues two vector searches per request).
+    """
+    global _chroma_client
+
+    if _chroma_client is None:
+        with _chroma_lock:
+            if _chroma_client is None:
+                logger.info("Opening Chroma index at %s...", CHROMA_DIR)
+                _chroma_client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+                logger.info("Chroma index ready.")
+
+    return _chroma_client
+
+
 def vector_search(
     query_embedding: np.ndarray,
     k: int,
@@ -231,9 +302,7 @@ def vector_search(
     chunk_type: str | None = None,
     tickers: list[str] | None = None,
 ) -> list[str]:
-    chroma_client = chromadb.PersistentClient(path = str(CHROMA_DIR))
-
-    collection = chroma_client.get_collection("filings")
+    collection = get_chroma_client().get_collection("filings")
 
     kwargs: dict = {"query_embeddings": [query_embedding], "n_results": k}
 
@@ -262,16 +331,30 @@ def vector_search(
 
 
 _bm25_cache: dict | None = None
+_bm25_lock = threading.Lock()
 
 
 def _load_bm25() -> dict:
     global _bm25_cache
 
     if _bm25_cache is None:
-        with BM25_PATH.open("rb") as f:
-            _bm25_cache = pickle.load(f)
+        with _bm25_lock:
+            if _bm25_cache is None:
+                logger.info("Loading BM25 index from %s...", BM25_PATH)
+                with BM25_PATH.open("rb") as f:
+                    _bm25_cache = pickle.load(f)
+                logger.info("BM25 index ready.")
 
     return _bm25_cache
+
+
+def get_bm25() -> dict:
+    """Public accessor so callers can preload the keyword index.
+
+    The pipeline reaches it through ``keyword_search``; the web warm-up needs to
+    force it into memory before the first request arrives.
+    """
+    return _load_bm25()
 
 
 def keyword_search(
@@ -351,8 +434,11 @@ def rerank_label(chunk: dict) -> str:
 
 
 def rerank(query: str, candidate_ids: list[str], chunk_lookup: dict[str, dict], top_k: int, mode: str = "table-aware") -> list[dict]:
+    # Shallow-copy so per-request scores land on request-local dicts. The
+    # lookup itself is shared across request threads (see get_chunk_lookup),
+    # and rerank writes rerank_score / _calibrated onto each chunk.
     candidates = [
-        chunk_lookup[cid]
+        dict(chunk_lookup[cid])
         for cid in candidate_ids
         if cid in chunk_lookup
     ]
@@ -508,6 +594,16 @@ def select_table_aware(
     return selected
 
 
+def last_rewrite() -> str | None:
+    """Retrieval query actually used by the calling thread, if changed."""
+    return getattr(_tls, "last_rewrite", None)
+
+
+def last_tickers() -> list[str]:
+    """Tickers routed by the calling thread."""
+    return getattr(_tls, "last_tickers", [])
+
+
 def retrieve(
     query: str,
     form: str | None = None,
@@ -525,7 +621,7 @@ def retrieve(
 \
 \
 
-    chunk_lookup = load_chunk_lookup()
+    chunk_lookup = get_chunk_lookup()
 
     if form is None:
 
@@ -543,7 +639,10 @@ def retrieve(
             routed = _route(query, indexed=indexed_companies(), history=history)
         except Exception:
             routed = []
-    retrieve.last_tickers = routed
+
+    # Per-thread state: a server answers several requests at once, so the
+    # routing trace must not live on the module or on the function object.
+    _tls.last_tickers = routed
 
 
     eff_query = query
@@ -554,7 +653,7 @@ def retrieve(
             eff_query = _rewrite(query, history=history, tickers=routed or None)
         except Exception:
             eff_query = query
-    retrieve.last_rewrite = eff_query
+    _tls.last_rewrite = eff_query
 
     form_by_id = (
         {cid: c["form"] for cid, c in chunk_lookup.items()} if form else None
@@ -591,7 +690,13 @@ def retrieve(
 
     top_candidates = fused_ids[: K_VECTOR + K_BM25 + K_TABLE]
 
-    return rerank(eff_query, top_candidates, chunk_lookup, FINAL_K, mode=reranker_mode)
+    selected = rerank(
+        eff_query, top_candidates, chunk_lookup, FINAL_K, mode=reranker_mode
+    )
+
+    # Detach from the shared lookup: callers (and the answer cache) mutate and
+    # serialise these, and a web worker serves several threads at once.
+    return [copy.deepcopy(c) for c in selected]
 
 
 def main():
@@ -614,10 +719,10 @@ def main():
     )
 
     print(f"\nTop {len(results)} chunks for: {query}\n")
-    if getattr(retrieve, "last_rewrite", query) != query:
-        print(f"Rewritten retrieval query: {retrieve.last_rewrite}")
-    if getattr(retrieve, "last_tickers", []):
-        print(f"Routed tickers: {retrieve.last_tickers}")
+    if last_rewrite() and last_rewrite() != query:
+        print(f"Rewritten retrieval query: {last_rewrite()}")
+    if last_tickers():
+        print(f"Routed tickers: {last_tickers()}")
 
     for i, chunk in enumerate(results, 1):
         preview = chunk["text"][:200].replace("\n", " ")

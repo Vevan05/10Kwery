@@ -3,7 +3,7 @@ import pickle
 import re
 import shutil
 import sys
-from pathlib import Path
+
 import numpy as np
 
 import chromadb
@@ -11,9 +11,7 @@ from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
-CHUNKS_PATH = Path("data/chunks/chunks.jsonl")
-CHROMA_DIR = Path("data/chroma_db")
-BM25_PATH = Path("data/bm25_index.pkl")
+from config import BM25_PATH, CHROMA_DIR, CHUNKS_PATH
 
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 EMBED_BATCH_SIZE = 256

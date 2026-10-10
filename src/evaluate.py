@@ -3,6 +3,7 @@ import json
 import time
 from pathlib import Path
 
+from config import REPO_ROOT
 from entailment import verify_citations
 from generate import check_citations, generate_answer, clear_answer_cache
 from retrieve import (
@@ -13,7 +14,9 @@ from retrieve import (
     vector_search,
 )
 
-EVAL_SET_PATH = Path("eval/qa_pairs.json")
+# Resolved from the repo root, not the working directory, so the eval runs the
+# same way from the shell and from the deployed tree.
+EVAL_SET_PATH = REPO_ROOT / "eval" / "qa_pairs.json"
 TOP_K = 5
 
 
@@ -147,7 +150,11 @@ def run_evaluation(
             return hits / len(chunks)
 
         marker = "DIFF" if b_rank != h_rank else "    "
-        cache_marker = "[CACHED]" if answer in cache.values() else ""
+        # Only meaningful when generation ran: the retrieval-only path never
+        # produces an answer, so there is nothing to look up in the cache.
+        cache_marker = (
+            "[CACHED]" if not skip_generation and answer in cache.values() else ""
+        )
 
         print(f"[{i}/{len(eval_set)}] {query[:65]}")
         print(
