@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import html
 import logging
+import math
 import os
+import re
 import sys
 import threading
 import time
@@ -153,23 +155,70 @@ def client_key(request: Request) -> str:
 
 EMPTY_ANSWER = (
     '<div class="kw-empty">'
-    '<div class="kw-empty-icon">&#8984;</div>'
-    "<div><b>Ask anything about the indexed filings.</b><br>"
-    "Every answer is grounded in retrieved excerpts and cited.</div>"
-    "</div>"
+    '<div class="kw-empty-icon">'
+    '<svg viewBox="0 0 24 24" width="26" height="26" fill="none" '
+    'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" '
+    'stroke-linejoin="round"><circle cx="11" cy="11" r="7"/>'
+    '<path d="m20 20-3.5-3.5"/><path d="M8.5 11h5M11 8.5v5" opacity=".6"/>'
+    "</svg></div>"
+    '<div class="kw-empty-title">Ask anything about the indexed filings</div>'
+    '<div class="kw-empty-sub">Every answer is grounded in retrieved '
+    "excerpts and cited back to the source filing.</div>"
+    '<div class="kw-empty-badges">'
+    '<span class="kw-badge">Cited</span>'
+    '<span class="kw-badge">Grounded</span>'
+    '<span class="kw-badge">SEC 10-K / 10-Q</span>'
+    "</div></div>"
 )
 EMPTY_SOURCES = '<div class="kw-muted">Ask a question to see sources.</div>'
+
+# Citations, money, percentages: the things a reader scans a financial answer
+# for. One alternation so already-wrapped spans are never wrapped twice.
+_HIGHLIGHT_RE = re.compile(
+    r"(?P<cite>\[\d+(?:\s*,\s*\d+)*\])"
+    r"|(?P<money>\$\s?\d[\d,]*(?:\.\d+)?(?:\s?(?:trillion|billion|million|thousand|[TBMK])\b)?)"
+    r"|(?P<pct>\b\d+(?:\.\d+)?\s?%)",
+    flags=re.IGNORECASE,
+)
+
+
+def highlight_answer(text: str) -> str:
+    """Wrap citations and key figures in styled spans (markdown allows inline HTML)."""
+
+    def repl(m: re.Match) -> str:
+        if m.group("cite"):
+            nums = re.sub(r"[\[\]\s]", "", m.group("cite"))
+            return f'<span class="kw-cite">{nums}</span>'
+        if m.group("money"):
+            return f'<mark class="kw-num">{m.group("money")}</mark>'
+        return f'<mark class="kw-pct">{m.group("pct")}</mark>'
+
+    return _HIGHLIGHT_RE.sub(repl, text)
 
 
 def render_answer(payload: dict) -> str:
     if payload.get("refused"):
         reason = html.escape(payload.get("reason", "") or "")
         return (
-            '<div class="kw-refusal"><b>I cannot answer that from the '
-            "indexed filings.</b>"
-            f"<p>{reason}</p></div>"
+            '<div class="kw-refusal">'
+            '<div class="kw-refusal-icon">!</div>'
+            "<div><b>I cannot answer that from the indexed filings.</b>"
+            f"<p>{reason}</p></div></div>"
         )
-    return payload.get("answer", "")
+    answer = payload.get("answer", "") or ""
+    tickers = payload.get("tickers") or []
+    header = ""
+    if tickers:
+        chips = "".join(
+            f'<span class="kw-chip kw-chip-accent">{html.escape(str(t))}</span>'
+            for t in tickers
+        )
+        header = (
+            '<div class="kw-answer-head">'
+            '<span class="kw-answer-label">Answer</span>'
+            f"{chips}</div>\n\n"
+        )
+    return header + highlight_answer(answer)
 
 
 def render_notice(message: str) -> str:
@@ -180,17 +229,60 @@ LOADING_SOURCES = (
     '<div class="kw-muted">Sources appear alongside the answer.</div>'
 )
 
+_STAGES = (
+    (0.00, "Understanding your question"),
+    (0.15, "Retrieving relevant filings"),
+    (0.45, "Reranking excerpts"),
+    (0.70, "Writing a cited answer"),
+    (0.90, "Verifying citations"),
+)
+
+
+def _progress_fraction(elapsed: float, estimate: float) -> float:
+    """Asymptotic progress: tracks the estimate, never claims to be finished.
+
+    Reaches ~63% at the estimated latency and creeps toward 97%, so a slow
+    query keeps visibly moving instead of sitting on a full bar.
+    """
+    estimate = max(estimate, 1.0)
+    return 0.97 * (1.0 - math.exp(-elapsed / estimate))
+
 
 def render_loading(elapsed: float, estimate: float) -> str:
-    """Spinner card shown inside the answer panel while a query runs."""
+    """Progress card shown inside the answer panel while a query runs."""
+    frac = _progress_fraction(elapsed, estimate)
+    pct = frac * 100
+    stage = _STAGES[0][1]
+    stage_idx = 0
+    for i, (threshold, label) in enumerate(_STAGES):
+        if frac >= threshold:
+            stage, stage_idx = label, i
+
+    steps = "".join(
+        f'<span class="kw-step{" kw-step-done" if i < stage_idx else ""}'
+        f'{" kw-step-on" if i == stage_idx else ""}"></span>'
+        for i in range(len(_STAGES))
+    )
     return (
         '<div class="kw-loading">'
+        '<div class="kw-loading-head">'
         '<span class="kw-spinner" aria-hidden="true"></span>'
         '<div class="kw-loading-text">'
-        '<div class="kw-loading-title">Searching filings and writing an answer'
-        "</div>"
+        f'<div class="kw-loading-title">{html.escape(stage)}</div>'
         f'<div class="kw-loading-sub">usually about {estimate:.0f}s '
         f"&middot; {elapsed:.0f}s elapsed</div>"
+        "</div>"
+        f'<div class="kw-loading-pct">{pct:.0f}%</div>'
+        "</div>"
+        '<div class="kw-bar" role="progressbar" aria-valuemin="0" '
+        f'aria-valuemax="100" aria-valuenow="{pct:.0f}">'
+        f'<div class="kw-bar-fill" style="width:{pct:.1f}%"></div>'
+        "</div>"
+        f'<div class="kw-steps">{steps}</div>'
+        '<div class="kw-skeleton">'
+        '<div class="kw-sk" style="width:92%"></div>'
+        '<div class="kw-sk" style="width:78%"></div>'
+        '<div class="kw-sk" style="width:85%"></div>'
         "</div></div>"
     )
 
@@ -216,7 +308,10 @@ def render_sources(payload: dict) -> str:
         score = s.get("rerank_score")
         score_html = ""
         if score is not None:
-            score_html = f'<span class="kw-score">relevance {score:.2f}</span>'
+            try:
+                score_html = f'<span class="kw-score">relevance {float(score):.2f}</span>'
+            except (TypeError, ValueError):
+                score_html = ""
 
         url = s.get("source_url")
         link_html = ""
@@ -271,15 +366,15 @@ def companies_html(names: list[str]) -> str:
 
 
 THEME = gr.themes.Base(
-    primary_hue="indigo",
-    secondary_hue="zinc",
-    neutral_hue="zinc",
+    primary_hue="violet",
+    secondary_hue="cyan",
+    neutral_hue="slate",
     font=[gr.themes.GoogleFont("Inter"), "ui-sans-serif", "system-ui", "sans-serif"],
     font_mono=[gr.themes.GoogleFont("JetBrains Mono"), "ui-monospace", "monospace"],
-    radius_size=gr.themes.sizes.radius_md,
+    radius_size=gr.themes.sizes.radius_lg,
 ).set(
-    body_background_fill="#fafafa",
-    body_background_fill_dark="#0c0c0e",
+    body_background_fill="#f6f6fb",
+    body_background_fill_dark="#07070d",
     block_background_fill="transparent",
     block_background_fill_dark="transparent",
     block_border_width="0px",
@@ -287,17 +382,20 @@ THEME = gr.themes.Base(
     block_shadow_dark="none",
     block_padding="0px",
     input_background_fill="white",
-    input_background_fill_dark="#131316",
+    input_background_fill_dark="#0f0f1a",
     input_border_width="1px",
+    input_border_color="rgba(100, 100, 140, .25)",
+    input_border_color_dark="rgba(160, 160, 220, .16)",
     input_shadow="none",
-    input_shadow_focus="0 0 0 3px rgba(99, 102, 241, .15)",
-    button_primary_background_fill="#18181b",
-    button_primary_background_fill_hover="#27272a",
-    button_primary_background_fill_dark="#fafafa",
-    button_primary_background_fill_hover_dark="#e4e4e7",
-    button_primary_text_color="#fafafa",
-    button_primary_text_color_dark="#18181b",
-    button_primary_shadow="none",
+    input_shadow_focus="0 0 0 4px rgba(139, 92, 246, .18)",
+    button_primary_background_fill="linear-gradient(135deg, #8b5cf6 0%, #6366f1 55%, #06b6d4 120%)",
+    button_primary_background_fill_hover="linear-gradient(135deg, #9d78f8 0%, #7578f3 55%, #22c5e0 120%)",
+    button_primary_background_fill_dark="linear-gradient(135deg, #8b5cf6 0%, #6366f1 55%, #06b6d4 120%)",
+    button_primary_background_fill_hover_dark="linear-gradient(135deg, #9d78f8 0%, #7578f3 55%, #22c5e0 120%)",
+    button_primary_text_color="white",
+    button_primary_text_color_dark="white",
+    button_primary_shadow="0 8px 24px -8px rgba(124, 92, 246, .65)",
+    button_primary_shadow_dark="0 8px 24px -8px rgba(124, 92, 246, .65)",
     button_secondary_background_fill="transparent",
     button_secondary_background_fill_dark="transparent",
     button_secondary_shadow="none",
@@ -305,28 +403,72 @@ THEME = gr.themes.Base(
 
 CUSTOM_CSS = """
 :root {
-    --kw-accent: #6366f1;
-    --kw-line: rgba(113, 113, 122, .22);
-    --kw-soft: rgba(113, 113, 122, .07);
-    --kw-muted: rgba(113, 113, 122, .95);
+    --kw-bg: #f6f6fb;
+    --kw-card: rgba(255, 255, 255, .85);
+    --kw-card-solid: #ffffff;
+    --kw-ink: #14142b;
+    --kw-accent: #7c5cf6;
+    --kw-accent-2: #06b6d4;
+    --kw-grad: linear-gradient(135deg, #8b5cf6 0%, #6366f1 55%, #06b6d4 120%);
+    --kw-line: rgba(90, 90, 140, .16);
+    --kw-soft: rgba(124, 92, 246, .07);
+    --kw-muted: rgba(70, 70, 110, .78);
     --kw-ok: #10b981;
     --kw-warn: #f59e0b;
     --kw-err: #ef4444;
-    --kw-gap: 24px;
-    --kw-track: rgba(113, 113, 122, .22);
+    --kw-num-bg: rgba(16, 185, 129, .13);
+    --kw-num-fg: #047857;
+    --kw-pct-bg: rgba(245, 158, 11, .15);
+    --kw-pct-fg: #b45309;
+    --kw-cite-bg: rgba(124, 92, 246, .14);
+    --kw-cite-fg: #6d28d9;
+    --kw-glow: rgba(124, 92, 246, .16);
+    --kw-shadow: 0 1px 0 rgba(255,255,255,.6) inset, 0 18px 40px -24px rgba(60, 40, 140, .35);
+    --kw-gap: 22px;
+    --kw-r: 20px;
+}
+.dark {
+    --kw-bg: #07070d;
+    --kw-card: rgba(20, 20, 34, .72);
+    --kw-card-solid: #12121f;
+    --kw-ink: #ececf8;
+    --kw-line: rgba(160, 160, 230, .13);
+    --kw-soft: rgba(139, 92, 246, .10);
+    --kw-muted: rgba(180, 180, 215, .70);
+    --kw-num-bg: rgba(52, 211, 153, .13);
+    --kw-num-fg: #6ee7b7;
+    --kw-pct-bg: rgba(251, 191, 36, .13);
+    --kw-pct-fg: #fcd34d;
+    --kw-cite-bg: rgba(167, 139, 250, .18);
+    --kw-cite-fg: #c4b5fd;
+    --kw-glow: rgba(139, 92, 246, .22);
+    --kw-shadow: 0 1px 0 rgba(255,255,255,.04) inset, 0 24px 50px -28px rgba(0, 0, 0, .9);
 }
 
 footer { display: none !important; }
 
-/* ---------- Page: always fill the viewport, never leave a void ---------- */
+/* ---------- Page: ambient glow behind a calm, centred column ---------- */
+html, body { overflow-x: hidden; }
+body {
+    background:
+        radial-gradient(900px 480px at 12% -8%, var(--kw-glow), transparent 60%),
+        radial-gradient(760px 420px at 100% 0%, rgba(6, 182, 212, .10), transparent 60%),
+        var(--kw-bg) !important;
+    background-attachment: fixed !important;
+}
 .gradio-container {
-    max-width: 1160px !important;
+    max-width: 1180px !important;
+    /* border-box is essential: with content-box the 100vh min-height plus the
+       padding overflows the viewport by 62px, which is the top scrollbar. */
+    box-sizing: border-box;
     min-height: 100vh;
     margin: 0 auto !important;
-    padding: 32px 28px 28px 28px !important;
+    padding: 30px 28px 24px 28px !important;
     display: flex;
     flex-direction: column;
     gap: var(--kw-gap);
+    background: transparent !important;
+    overflow-x: hidden;
 }
 .gradio-container > main,
 .gradio-container .main,
@@ -347,23 +489,39 @@ footer { display: none !important; }
     padding: 0 0 var(--kw-gap) 0;
     border-bottom: 1px solid var(--kw-line);
 }
-#kw-title h1 {
-    font-size: 1.35rem;
-    font-weight: 650;
-    letter-spacing: -0.03em;
-    line-height: 1.2;
-    margin: 0;
+/* The title block must never clip or scroll: Gradio's markdown wrapper can
+   otherwise show a tiny scrollbar and hide the heading. */
+#kw-header, #kw-title, #kw-title *,
+#kw-title .prose, #kw-title .md {
+    overflow: visible !important;
+    max-height: none !important;
 }
-#kw-title p { font-size: .84rem; color: var(--kw-muted); margin: 4px 0 0 0; }
+.kw-h1 {
+    font-size: 1.75rem;
+    font-weight: 750;
+    letter-spacing: -0.04em;
+    line-height: 1.25;
+    margin: 0;
+    padding: 0;
+    color: var(--kw-ink);
+}
+.kw-h1-bar {
+    display: block; width: 44px; height: 4px; margin-top: 8px;
+    border-radius: 999px; background: var(--kw-grad);
+}
+#kw-title p { font-size: .88rem; color: var(--kw-muted); margin: 6px 0 0 0; }
 #kw-status { text-align: right; }
 
 .kw-pill {
-    display: inline-flex; align-items: center; gap: 8px;
-    font-size: .78rem; color: var(--kw-muted);
+    display: inline-flex; align-items: center; gap: 9px;
+    font-size: .78rem; font-weight: 600; color: var(--kw-muted);
+    padding: 7px 14px; border-radius: 999px;
+    background: var(--kw-card); border: 1px solid var(--kw-line);
+    backdrop-filter: blur(10px);
 }
-.kw-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--kw-warn); }
+.kw-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--kw-warn); }
 .kw-pill-loading .kw-dot { animation: kw-pulse 1.2s ease-in-out infinite; }
-.kw-pill-ok .kw-dot { background: var(--kw-ok); }
+.kw-pill-ok .kw-dot { background: var(--kw-ok); box-shadow: 0 0 0 4px rgba(16,185,129,.18); }
 .kw-pill-err .kw-dot { background: var(--kw-err); }
 @keyframes kw-pulse { 50% { opacity: .25; } }
 
@@ -372,12 +530,14 @@ footer { display: none !important; }
 #kw-status, #kw-companies, #kw-latency { min-height: 0; }
 #kw-status .pending, #kw-companies .pending, #kw-latency .pending { opacity: 1 !important; }
 
-/* ---------- Body: two columns that stretch to the bottom edge ---------- */
+/* ---------- Body ---------- */
 #kw-body {
     flex: 1 1 auto;
     align-items: stretch;
-    gap: calc(var(--kw-gap) * 1.5);
-    min-height: calc(100vh - 190px);
+    gap: calc(var(--kw-gap) * 1.2);
+    /* No min-height: forcing the row to ~viewport height on top of a container
+       that is already 100vh is what pushed the page past one screen. */
+    min-height: 0;
 }
 #kw-main, #kw-side {
     display: flex;
@@ -385,186 +545,321 @@ footer { display: none !important; }
     gap: var(--kw-gap);
 }
 
-/* ---------- Question + toolbar ---------- */
+/* ---------- Question ---------- */
 #kw-question { flex: 0 0 auto; }
 #kw-question textarea {
-    font-size: 1rem;
+    font-size: 1.02rem;
     line-height: 1.55;
-    padding: 16px 18px;
-    border-radius: 12px;
-    border-color: var(--kw-line);
+    padding: 18px 20px;
+    border-radius: var(--kw-r);
+    border: 1px solid var(--kw-line);
+    background: var(--kw-card-solid);
+    color: var(--kw-ink);
+    box-shadow: var(--kw-shadow);
     resize: none;
+    transition: border-color .15s ease, box-shadow .15s ease;
 }
-#kw-question textarea:focus { border-color: var(--kw-accent); }
+#kw-question textarea::placeholder { color: var(--kw-muted); }
+#kw-question textarea:focus {
+    border-color: var(--kw-accent);
+    box-shadow: 0 0 0 4px rgba(124, 92, 246, .18), var(--kw-shadow);
+}
 #kw-question label > span { display: none; }
 
-#kw-toolbar { flex: 0 0 auto; align-items: center; gap: 10px; margin-top: -8px; }
+/* ---------- Toolbar ---------- */
+#kw-toolbar { flex: 0 0 auto; align-items: center; gap: 10px; margin-top: -6px; }
 #kw-toolbar button {
-    flex: 0 0 auto; min-width: 92px;
-    font-weight: 600; font-size: .86rem;
-    border-radius: 10px;
+    flex: 0 0 auto; min-width: 108px;
+    font-weight: 650; font-size: .88rem;
+    border-radius: 14px; padding: 11px 20px;
+    transition: transform .12s ease, box-shadow .12s ease, background .12s ease;
 }
-#kw-toolbar button.secondary { border: 1px solid var(--kw-line); color: var(--kw-muted); }
-#kw-toolbar button.secondary:hover { color: inherit; background: var(--kw-soft); }
+#kw-toolbar button.primary { border: none; }
+#kw-toolbar button.primary:hover { transform: translateY(-1px); }
+#kw-toolbar button.primary:active { transform: translateY(0); }
+#kw-toolbar button.secondary {
+    border: 1px solid var(--kw-line); color: var(--kw-muted);
+    background: var(--kw-card);
+}
+#kw-toolbar button.secondary:hover { color: var(--kw-ink); background: var(--kw-soft); }
 #kw-latency { margin-left: auto; text-align: right; min-width: 70px; }
-.kw-lat { font-family: var(--font-mono); font-size: .74rem; color: var(--kw-muted); }
+.kw-lat {
+    font-family: var(--font-mono); font-size: .74rem; font-weight: 600;
+    color: var(--kw-accent);
+    padding: 5px 11px; border-radius: 999px; background: var(--kw-soft);
+}
 
-/* ---------- Answer: the flexible surface that takes up the slack ---------- */
+/* ---------- Answer: the flexible, elevated surface ---------- */
+/* No card behind the answer: it sits directly on the page, so the chat reads as
+   text rather than a grey slab. */
 #kw-answer {
     flex: 1 1 auto;
-    min-height: 240px;
-    padding: 24px 26px;
-    border: 1px solid var(--kw-line);
-    border-radius: 14px;
-    font-size: .98rem;
-    line-height: 1.75;
+    min-height: 200px;
+    padding: 20px 4px;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    backdrop-filter: none;
+    color: var(--kw-ink);
+    font-size: 1rem;
+    line-height: 1.78;
     overflow: auto;
 }
 #kw-answer p:first-child { margin-top: 0; }
 #kw-answer p:last-child { margin-bottom: 0; }
 #kw-answer ul, #kw-answer ol { padding-left: 1.3em; }
-#kw-answer table { font-size: .88rem; }
+#kw-answer li { margin: .5em 0; }
+#kw-answer li::marker { color: var(--kw-accent); }
+#kw-answer table { font-size: .88rem; border-radius: 12px; overflow: hidden; }
+#kw-answer strong { color: var(--kw-ink); font-weight: 700; }
 
-.kw-empty {
-    min-height: 200px;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    gap: 6px; text-align: center; color: var(--kw-muted);
-    font-size: .9rem; line-height: 1.6;
+/* Highlights: figures, percentages and citation markers. */
+mark.kw-num, mark.kw-pct {
+    padding: 1px 7px; border-radius: 8px;
+    font-weight: 650; font-variant-numeric: tabular-nums;
+    -webkit-box-decoration-break: clone; box-decoration-break: clone;
 }
-.kw-empty b { color: inherit; font-weight: 600; font-size: .98rem; }
+mark.kw-num { background: var(--kw-num-bg); color: var(--kw-num-fg); }
+mark.kw-pct { background: var(--kw-pct-bg); color: var(--kw-pct-fg); }
+.kw-cite {
+    display: inline-block; vertical-align: baseline;
+    margin: 0 2px; padding: 0 7px; min-width: 20px;
+    border-radius: 999px; text-align: center;
+    font-size: .72rem; font-weight: 700; line-height: 1.55;
+    background: var(--kw-cite-bg); color: var(--kw-cite-fg);
+}
+
+.kw-answer-head {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin-bottom: 14px; padding-bottom: 14px;
+    border-bottom: 1px dashed var(--kw-line);
+}
+.kw-answer-label {
+    font-size: .68rem; font-weight: 750; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--kw-accent); margin-right: 4px;
+}
+
+/* ---------- Empty state ---------- */
+.kw-empty {
+    min-height: 220px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 8px; text-align: center; color: var(--kw-muted);
+    font-size: .92rem; line-height: 1.6;
+}
 .kw-empty-icon {
-    width: 40px; height: 40px; margin-bottom: 8px;
+    width: 58px; height: 58px; margin-bottom: 10px;
     display: grid; place-items: center;
-    border-radius: 12px; font-size: 1.15rem;
-    border: 1px solid var(--kw-line);
+    border-radius: 18px; color: white;
+    background: var(--kw-grad);
+    box-shadow: 0 14px 30px -10px rgba(124, 92, 246, .6);
+}
+.kw-empty-title { font-weight: 700; font-size: 1.08rem; color: var(--kw-ink); letter-spacing: -0.01em; }
+.kw-empty-sub { max-width: 380px; }
+.kw-empty-badges { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 10px; }
+.kw-badge {
+    font-size: .72rem; font-weight: 650; padding: 5px 12px; border-radius: 999px;
+    background: var(--kw-soft); color: var(--kw-accent); border: 1px solid var(--kw-line);
+}
+
+/* ---------- Refusal + notice ---------- */
+.kw-refusal {
+    display: flex; gap: 14px; align-items: flex-start;
+    padding: 18px 20px; border-radius: 16px;
+    background: rgba(245, 158, 11, .09); border: 1px solid rgba(245, 158, 11, .32);
+}
+.kw-refusal-icon {
+    flex: 0 0 30px; height: 30px; border-radius: 10px; display: grid; place-items: center;
+    background: var(--kw-warn); color: #1c1200; font-weight: 800;
 }
 .kw-refusal b { color: var(--kw-warn); }
-.kw-refusal p { margin: 8px 0 0 0; color: var(--kw-muted); }
+.kw-refusal p { margin: 6px 0 0 0; color: var(--kw-muted); }
 .kw-notice {
-    padding: 12px 16px; border-radius: 10px; font-size: .9rem;
-    background: rgba(245, 158, 11, .08);
-    border: 1px solid rgba(245, 158, 11, .3);
+    padding: 14px 18px; border-radius: 14px; font-size: .9rem;
+    background: rgba(245, 158, 11, .09);
+    border: 1px solid rgba(245, 158, 11, .32);
 }
 
-/* ---------- Loading ---------- */
+/* ---------- Loading: progress bar, stages, skeleton ---------- */
 .kw-loading {
-    min-height: 200px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 16px;
+    min-height: 220px;
+    display: flex; flex-direction: column; justify-content: center; gap: 16px;
     color: var(--kw-muted);
 }
+.kw-loading-head { display: flex; align-items: center; gap: 14px; }
 .kw-spinner {
-    flex: 0 0 auto;
-    width: 26px;
-    height: 26px;
-    border-radius: 50%;
-    border: 2.5px solid var(--kw-track);
+    flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%;
+    border: 3px solid var(--kw-line);
     border-top-color: var(--kw-accent);
     animation: kw-spin .7s linear infinite;
 }
 @keyframes kw-spin { to { transform: rotate(360deg); } }
-.kw-loading-title {
-    font-weight: 600;
-    font-size: .95rem;
-    color: inherit;
+.kw-loading-text { flex: 1; min-width: 0; }
+.kw-loading-title { font-weight: 650; font-size: .98rem; color: var(--kw-ink); }
+.kw-loading-sub { margin-top: 3px; font-size: .76rem; font-family: var(--font-mono); }
+.kw-loading-pct {
+    font-family: var(--font-mono); font-size: 1.1rem; font-weight: 700;
+    color: var(--kw-accent); font-variant-numeric: tabular-nums;
 }
-.kw-loading-sub {
-    margin-top: 4px;
-    font-size: .78rem;
-    font-family: var(--font-mono);
+.kw-bar {
+    position: relative; height: 10px; border-radius: 999px;
+    background: var(--kw-soft); border: 1px solid var(--kw-line); overflow: hidden;
 }
+.kw-bar-fill {
+    position: relative; height: 100%; border-radius: 999px;
+    background: var(--kw-grad);
+    box-shadow: 0 0 18px rgba(124, 92, 246, .55);
+    transition: width .9s cubic-bezier(.22, .8, .3, 1);
+    overflow: hidden;
+}
+.kw-bar-fill::after {
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(100deg, transparent 0%, rgba(255,255,255,.45) 50%, transparent 100%);
+    transform: translateX(-100%);
+    animation: kw-sheen 1.3s ease-in-out infinite;
+}
+@keyframes kw-sheen { to { transform: translateX(100%); } }
+.kw-steps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.kw-step { height: 4px; border-radius: 999px; background: var(--kw-line); transition: background .3s ease; }
+.kw-step-done { background: var(--kw-accent); }
+.kw-step-on { background: var(--kw-accent-2); animation: kw-pulse 1s ease-in-out infinite; }
+.kw-skeleton { display: flex; flex-direction: column; gap: 10px; margin-top: 6px; }
+.kw-sk {
+    height: 12px; border-radius: 8px;
+    background: linear-gradient(90deg, var(--kw-soft) 25%, var(--kw-line) 50%, var(--kw-soft) 75%);
+    background-size: 200% 100%;
+    animation: kw-shimmer 1.4s linear infinite;
+}
+@keyframes kw-shimmer { to { background-position: -200% 0; } }
 
 /* ---------- Sources ---------- */
-#kw-sources {
+/* No grey panel behind the accordion: just a plain toggle row, with each
+   source drawn as its own card once opened. */
+#kw-sources, #kw-sources > div, #kw-sources .block {
     flex: 0 0 auto;
-    border: 1px solid var(--kw-line);
-    border-radius: 14px;
-    padding: 4px 8px;
+    border: none !important;
+    box-shadow: none !important;
+    background: transparent !important;
+    backdrop-filter: none !important;
+    padding: 0 !important;
 }
-#kw-sources button.label-wrap, #kw-sources .label-wrap { font-weight: 600; font-size: .86rem; }
-.kw-src-list { display: flex; flex-direction: column; }
+#kw-sources button.label-wrap, #kw-sources .label-wrap {
+    font-weight: 650; font-size: .9rem; color: var(--kw-muted);
+    padding: 8px 4px; border: none; background: transparent !important;
+}
+#kw-sources button.label-wrap:hover, #kw-sources .label-wrap:hover { color: var(--kw-ink); }
+.kw-src-list { display: flex; flex-direction: column; gap: 10px; padding: 4px 0 10px 0; }
 .kw-src {
     display: flex; gap: 14px; align-items: flex-start;
-    padding: 14px 6px;
-    border-top: 1px solid var(--kw-line);
+    padding: 14px 16px;
+    border: 1px solid var(--kw-line); border-radius: 16px;
+    background: var(--kw-card-solid);
+    transition: transform .12s ease, border-color .12s ease;
 }
-.kw-src:first-child { border-top: none; }
+.kw-src:hover { transform: translateY(-1px); border-color: var(--kw-accent); }
 .kw-src-n {
-    flex: 0 0 22px; height: 22px; border-radius: 6px;
+    flex: 0 0 26px; height: 26px; border-radius: 9px;
     display: grid; place-items: center;
-    font-size: .72rem; font-weight: 700;
-    background: var(--kw-soft); color: var(--kw-muted);
+    font-size: .76rem; font-weight: 750;
+    background: var(--kw-cite-bg); color: var(--kw-cite-fg);
 }
 .kw-src-body { min-width: 0; flex: 1; }
-.kw-src-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
-.kw-tag { font-size: .8rem; font-weight: 700; letter-spacing: .02em; }
-.kw-tag-alt { font-weight: 500; color: var(--kw-muted); }
+.kw-src-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.kw-tag {
+    font-size: .74rem; font-weight: 750; letter-spacing: .03em;
+    padding: 2px 9px; border-radius: 8px;
+    background: var(--kw-grad); color: white;
+}
+.kw-tag-alt { background: var(--kw-soft); color: var(--kw-accent); font-weight: 650; }
 .kw-src-date { font-size: .76rem; color: var(--kw-muted); }
-.kw-score { margin-left: auto; font-family: var(--font-mono); font-size: .7rem; color: var(--kw-muted); }
-.kw-src-section { font-size: .86rem; margin-top: 4px; line-height: 1.45; }
+.kw-score {
+    margin-left: auto; font-family: var(--font-mono); font-size: .7rem; font-weight: 600;
+    padding: 3px 9px; border-radius: 999px;
+    background: var(--kw-num-bg); color: var(--kw-num-fg);
+}
+.kw-src-section { font-size: .88rem; margin-top: 6px; line-height: 1.45; color: var(--kw-ink); }
 .kw-link {
-    display: inline-block; margin-top: 6px;
-    font-size: .78rem; font-weight: 600;
+    display: inline-block; margin-top: 8px;
+    font-size: .78rem; font-weight: 650;
     color: var(--kw-accent); text-decoration: none;
 }
 .kw-link:hover { text-decoration: underline; }
 .kw-muted { font-size: .85rem; color: var(--kw-muted); padding: 10px 6px; }
 
-/* ---------- Sidebar: no box, just a hairline and breathing room ---------- */
-#kw-side {
-    padding-left: calc(var(--kw-gap) * 1.5);
-    border-left: 1px solid var(--kw-line);
-    gap: 32px;
+/* ---------- Sidebar: glass cards ---------- */
+#kw-side { padding-left: 0; gap: 18px; }
+#kw-side .group, #kw-side .gr-group, #kw-side .styler,
+#kw-side div[class*="group"] {
+    background: var(--kw-card) !important;
+    border: 1px solid var(--kw-line) !important;
+    border-radius: 22px !important;
+    box-shadow: var(--kw-shadow) !important;
+    padding: 18px !important;
+    display: flex; flex-direction: column; gap: 14px;
+    backdrop-filter: blur(14px);
 }
-#kw-side .group, #kw-side .gr-group {
-    background: transparent; border: none; box-shadow: none; padding: 0;
-    display: flex; flex-direction: column; gap: 12px;
+#kw-side .group > *, #kw-side .gr-group > *, #kw-side .styler > * {
+    background: transparent !important;
 }
 #kw-side h3 {
-    font-size: .7rem; font-weight: 650;
-    text-transform: uppercase; letter-spacing: .1em;
-    color: var(--kw-muted);
+    font-size: .68rem; font-weight: 750;
+    text-transform: uppercase; letter-spacing: .13em;
+    color: var(--kw-accent);
     margin: 0;
 }
 .kw-chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .kw-chip {
-    font-size: .78rem; font-weight: 600;
-    padding: 4px 11px; border-radius: 999px;
+    font-size: .78rem; font-weight: 650;
+    padding: 5px 13px; border-radius: 999px;
     border: 1px solid var(--kw-line);
+    background: var(--kw-soft); color: var(--kw-ink);
+    transition: transform .12s ease, border-color .12s ease;
 }
+.kw-chip:hover { transform: translateY(-1px); border-color: var(--kw-accent); }
+.kw-chip-accent { background: var(--kw-grad); color: white; border-color: transparent; }
 
-/* Example questions as quiet, clickable lines. */
+/* Example questions as soft, clickable rows. */
 #kw-examples .label, #kw-examples .label-wrap { display: none; }
-#kw-examples table { border: none; width: 100%; border-collapse: separate; border-spacing: 0 2px; }
-#kw-examples tr { cursor: pointer; background: transparent; }
-#kw-examples td {
-    font-size: .84rem; line-height: 1.45;
-    padding: 10px 12px; border: none; border-radius: 8px;
-    color: var(--kw-muted);
-    transition: background .12s ease, color .12s ease;
+#kw-examples, #kw-examples .gr-samples-table, #kw-examples .table-wrap {
+    background: transparent !important; border: none !important;
 }
-#kw-examples tr:hover td { background: var(--kw-soft); color: inherit; }
+#kw-examples table {
+    border: none !important; width: 100%;
+    border-collapse: separate; border-spacing: 0 6px; background: transparent !important;
+}
+#kw-examples tr { cursor: pointer; background: transparent !important; }
+#kw-examples td {
+    font-size: .84rem; line-height: 1.45; text-align: left !important;
+    padding: 11px 14px !important; border: 1px solid var(--kw-line) !important;
+    border-radius: 14px; background: var(--kw-card-solid) !important;
+    color: var(--kw-muted);
+    transition: background .12s ease, color .12s ease, border-color .12s ease, transform .12s ease;
+}
+#kw-examples tr:hover td {
+    background: var(--kw-soft) !important; color: var(--kw-ink);
+    border-color: var(--kw-accent) !important; transform: translateX(2px);
+}
 
 /* Pinned to the bottom of the sidebar so both columns end on the same line. */
 #kw-foot {
     margin-top: auto;
-    padding-top: 20px;
-    font-size: .74rem; line-height: 1.55;
+    padding: 14px 16px;
+    font-size: .76rem; line-height: 1.55;
     color: var(--kw-muted);
-    border-top: 1px solid var(--kw-line);
+    border: 1px dashed var(--kw-line); border-radius: 16px;
 }
 #kw-foot p { margin: 0; }
+
+/* ---------- Scrollbars ---------- */
+* { scrollbar-width: thin; scrollbar-color: var(--kw-line) transparent; }
 
 /* ---------- Small screens ---------- */
 @media (max-width: 800px) {
     .gradio-container { padding: 20px 16px !important; }
     #kw-header { flex-direction: column; align-items: flex-start; }
     #kw-status { text-align: left; }
-    #kw-side { padding-left: 0; border-left: none; border-top: 1px solid var(--kw-line); padding-top: var(--kw-gap); }
     #kw-body { min-height: 0; }
-    #kw-answer { padding: 18px; }
+    #kw-answer { padding: 20px; border-radius: 20px; }
 }
 """
 
@@ -573,7 +868,12 @@ def build_demo() -> gr.Blocks:
     with gr.Blocks(title="10-Kwery", fill_height=True) as demo:
         with gr.Row(elem_id="kw-header"):
             with gr.Column(scale=3, elem_id="kw-title", min_width=0):
-                gr.Markdown("# 10-Kwery")
+                # gr.HTML, not gr.Markdown: Gradio's markdown wrapper can clip or
+                # shadow-host the heading, which is what made it disappear.
+                gr.HTML(
+                    '<h1 class="kw-h1">10-Kwery<span class="kw-h1-bar"></span></h1>',
+                    elem_id="kw-title-text",
+                )
                 gr.Markdown(
                     "Citation-grounded Q&A over SEC 10-K and 10-Q filings"
                 )
@@ -645,12 +945,12 @@ def build_demo() -> gr.Blocks:
             )
 
         def on_ask(question: str, history: list, request: gr.Request):
-            """Answer one question, streaming a loading card while it runs.
+            """Answer one question, streaming a progress card while it runs.
 
             A generator, so the loading state is emitted before the pipeline
-            starts and updated every second: a 15s retrieval would otherwise
-            leave the panel frozen on the previous answer with no sign of life.
-            Gradio streams each yield straight to the components.
+            starts and updated several times a second: a 15s retrieval would
+            otherwise leave the panel frozen on the previous answer with no
+            sign of life. Gradio streams each yield straight to the components.
             """
             # Notices go into the answer card; the user's text stays in the
             # textbox so a rate-limit or empty submit never wipes the prompt.
@@ -685,17 +985,18 @@ def build_demo() -> gr.Blocks:
             )
 
             # First frame goes out before the worker reports anything, so the
-            # spinner appears as soon as the button is pressed.
+            # progress bar appears as soon as the button is pressed.
             yield (
                 history,
                 render_loading(0.0, estimate),
                 LOADING_SOURCES,
                 gr.update(),
-                latency_html("0s"),
+                latency_html("0.0s"),
             )
 
             while True:
-                done, _pending = _wait(future, 1.0)
+                # Short tick so the bar glides instead of jumping once a second.
+                done, _pending = _wait(future, 0.5)
                 if done:
                     break
                 elapsed = time.monotonic() - started
@@ -704,7 +1005,7 @@ def build_demo() -> gr.Blocks:
                     render_loading(elapsed, estimate),
                     LOADING_SOURCES,
                     gr.update(),
-                    latency_html(f"{elapsed:.0f}s"),
+                    latency_html(f"{elapsed:.1f}s"),
                 )
 
             try:
