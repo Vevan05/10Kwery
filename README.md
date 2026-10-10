@@ -358,63 +358,75 @@ The free Groq tier has a tight rate limit (~30 RPM). To avoid timeouts:
 
 # Deployment
 
-The project ships with a web front end (`app.py`) and everything needed to deploy
-it for free on a Hugging Face Space.
+The project ships with a web front end (`app.py`): a Gradio UI at `/`, a JSON
+API at `/api/*`, and a `/health` probe. It runs locally with `python app.py` and
+on any host that can run a Python process — see [Running the server
+locally](#running-the-server-locally) below.
 
-## Why a Space
+## Hosting options
 
-The pipeline needs PyTorch, ChromaDB and two transformer models, which rules out
-every free host with under ~1 GB of RAM. Hosts offering a genuinely free,
-no-credit-card tier in 2026:
+The pipeline needs PyTorch, ChromaDB and two transformer models, and I measured
+it at **1.32 GB peak RSS**, which rules out every free tier below roughly 1.5 GB.
 
 | Host | Free resources | Verdict |
 |------|----------------|---------|
-| **Hugging Face Spaces** (CPU Basic) | 2 vCPU, **16 GB RAM**, 50 GB disk | Works |
-| Streamlit Community Cloud | 1 GB RAM | OOMs on `import torch` |
-| Koyeb free | 512 MB, 0.1 vCPU, card required | Impossible |
-| Render / Railway / Fly.io | No meaningful free tier | No |
+| Hugging Face Spaces PRO | $9/mo, CPU Basic (2 vCPU / 16 GB) | Least work; the Space scripts below work unchanged |
+| Hugging Face Spaces (free account) | 2 ZeroGPU Spaces | **Cannot host this app** — see the note below |
+| Oracle Cloud Always Free | $0 forever, 2 OCPU / 12 GB RAM, card required | Genuinely free; needs a `Dockerfile` |
+| Google Cloud Run | ~$0 at low traffic, card required | Scales to zero when idle |
+| Streamlit Community Cloud | 1 GB RAM | Would OOM |
+| Koyeb free / Render / Fly.io | ≤ 512 MB or paid | Not enough RAM |
 
-Two Space properties shape the deployment: the 50 GB runtime disk is **ephemeral**
-(wiped on every restart), and Docker Spaces now require a paid plan, so the app
-runs on the free Gradio SDK.
+> **Note on HF Spaces.** A paid plan is now required to create any Space that runs
+> compute (Gradio or Docker); only Static Spaces are free to create, and free
+> personal accounts may host up to 2 Gradio Spaces on ZeroGPU. CPU Basic itself
+> still has no hourly cost, but a free account cannot create a Space on it. These
+> scripts are unaffected — `app.py` is host-agnostic — but there is no longer a
+> free, no-credit-card path through Spaces. On the $9/mo PRO route the two
+> scripts below work exactly as written.
 
-Consequently the retrieval index cannot live in the container. It is published as
-a dataset and downloaded on boot (a no-op locally, where the files already exist).
+## Why the index is a dataset
 
-## One-time setup
+Whatever the host, a Space's 50 GB runtime disk is **ephemeral** — wiped on every
+restart — so the index cannot live in the container image. It is published as a
+dataset and downloaded on boot. Locally this is a no-op: `src/config.py` resolves
+the index from `data/`, and `DATA_DIR` can point anywhere.
+
+## Publishing the index and deploying to a Space
 
 ```bash
-# 1. Build the index locally (add more tickers in src/ingestion.py if you want)
+# 1. Build the index locally (add tickers in src/ingestion.py to widen the corpus)
 python src/ingestion.py
 python src/chunk.py
 python src/index.py --force
 
-# 2. Publish the index as a dataset
+# 2. Publish the index as a dataset (277 MB; the raw filings are excluded)
 HF_TOKEN=hf_... python deploy/prepare_dataset.py --repo-id you/10kwery-index
 
 # 3. Create the Space and push the app
 HF_TOKEN=hf_... python deploy/push_space.py --space-id you/10kwery
 ```
 
-Then, on the Space's **Settings > Variables and secrets** page, add:
+Then set these under the Space's **Settings > Variables and secrets** page and
+restart it:
 
 | Name | Value | Why |
 |------|-------|-----|
-| `GROQ_API_KEY` | `gsk_...` | **Secret.** LLM access. |
+| `GROQ_API_KEY` | `gsk_...` | **Secret.** LLM access. Never passed through a script. |
 | `INDEX_DATASET` | `you/10kwery-index` | **Variable.** Where to fetch the index. |
-| `HF_TOKEN` | `hf_...` | Optional; raises download rate limits. |
-| `ENABLE_FOLLOWUP_CONDENSE` | `0` | Optional; saves one Groq call per follow-up. |
+| `HF_TOKEN` | `hf_...` | Optional; only needed if the dataset is private. |
+| `ENABLE_FOLLOWUP_CONDENSE` | `0` | Optional; its result is only logged, so it is safe to skip. |
 | `MAX_CONCURRENT_REQUESTS` | `2` | Optional; matches the 2 available cores. |
 | `RATE_LIMIT_RPM` | `10` | Optional; per-client request budget. |
 
-Restart the Space once the values are in place. The first boot downloads ~277 MB
-and loads both models, so give it a couple of minutes before the first query.
+The first boot downloads the index and loads both models, so allow 2–3 minutes
+before the first query.
 
 ## Keeping it awake
 
 A Space sleeps after 48 hours without visitors and wakes with an empty disk,
 forcing an index re-download. `deploy/keepalive.yml` is a cron workflow that
-pings `/api/companies` every 40 hours. Copy it to `.github/workflows/` and set
+pings the health endpoint every 40 hours. Copy it to `.github/workflows/` and set
 the `SPACE_URL` repository variable.
 
 ## Endpoints
@@ -427,20 +439,29 @@ the `SPACE_URL` repository variable.
 | `POST /api/query` | `{"question", "history":[]}` → answer + sources |
 
 ```bash
-curl -X POST https://you-10kwery.hf.space/api/query \
+curl -X POST http://localhost:7860/api/query \
   -H 'Content-Type: application/json' \
   -d '{"question":"What drove Tesla automotive revenue growth in 2024?"}'
 ```
 
+Supplying `history` with per-turn `tickers` is what makes a pronoun follow-up
+("how did that change?") resolve to the right company: the routed ticker is
+carried through the rule-based rewrite that scopes the retrieval query.
+
 ## Running the server locally
 
 ```bash
-GROQ_API_KEY=gsk_... python app.py   # http://localhost:7860
+source venv/bin/activate
+python app.py          # http://localhost:7860
 ```
 
-Local runs skip the dataset download: `src/config.py` resolves the index from
-`data/` as before, so `python src/generate.py "..."` keeps working unchanged.
+Locally there is nothing to configure — the index resolves from `data/` and the
+answer cache from `eval/`. The CLI keeps working unchanged:
+`python src/generate.py "..."`.
 
+## Deployment-specific behaviour
+
+Because the free tier is shared and small, the web defaults differ from the CLI:
 ## Deployment-specific behaviour
 
 Because the free tier is shared and small, the web defaults differ from the CLI:

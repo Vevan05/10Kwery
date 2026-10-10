@@ -33,6 +33,7 @@ from retrieve import (
     get_embed_model,
     get_reranker,
     indexed_companies,
+    last_tickers,
 )
 from session import ConversationSession
 
@@ -213,6 +214,10 @@ class TenKweryService:
 
         elapsed = round(time.monotonic() - started, 2)
 
+        # Thread-local state is still valid here: retrieve() set it a moment
+        # ago on this same thread, and it always overwrites (even when empty).
+        tickers = list(last_tickers())
+
         if not result:
             return {
                 "question": question,
@@ -223,6 +228,7 @@ class TenKweryService:
                     "question, so I cannot answer it from the indexed filings."
                 ),
                 "sources": [],
+                "tickers": tickers,
                 "latency_s": elapsed,
             }
 
@@ -232,6 +238,7 @@ class TenKweryService:
             "answer": result.get("answer")
             or _REFUSAL_MESSAGE.format(reason=result.get("reason", "unknown")),
             "reason": result.get("reason"),
+            "tickers": tickers,
             "sources": [_source_view(i, c) for i, c in enumerate(result["chunks"], 1)],
             "latency_s": elapsed,
         }
@@ -253,6 +260,10 @@ def _session_from_history(history: list[dict] | None) -> ConversationSession | N
     Multi-turn context needs a real session object: answer_query resolves its
     history through ``session.history_for_retrieval()``, and passing history any
     other way would collide with its own keyword argument.
+
+    Per-turn tickers are restored where present. They drive the rule-based
+    rewrite that turns "how did that change?" into a company-scoped query, so
+    dropping them silently breaks every follow-up that uses a pronoun.
     """
     if not history:
         return None
@@ -264,7 +275,7 @@ def _session_from_history(history: list[dict] | None) -> ConversationSession | N
         if not content:
             continue
         if role == "user":
-            session.add_user(content)
+            session.add_user(content, tickers=turn.get("tickers") or [])
         else:
             session.add_assistant(content)
     return session

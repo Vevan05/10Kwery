@@ -36,7 +36,7 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
-from config import RATE_LIMIT_RPM  # noqa: E402
+from config import MAX_CONCURRENT_REQUESTS, RATE_LIMIT_RPM  # noqa: E402
 from service import EXAMPLE_QUESTIONS, get_service  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -217,7 +217,13 @@ def build_demo() -> gr.Blocks:
 
             payload = get_service().ask(question.strip(), history=history)
             history = history + [
-                {"role": "user", "content": question},
+                # Tickers are what make a follow-up like "how did that change?"
+                # retrievable: rewriting rewrites it against the routed company.
+                {
+                    "role": "user",
+                    "content": question,
+                    "tickers": payload.get("tickers") or [],
+                },
                 {
                     "role": "assistant",
                     "content": payload.get("answer") or "",
@@ -257,6 +263,7 @@ def build_demo() -> gr.Blocks:
 class Turn(BaseModel):
     role: str = Field(pattern="^(user|assistant)$")
     content: str
+    tickers: list[str] = Field(default_factory=list)
 
 
 class QueryIn(BaseModel):
@@ -335,9 +342,15 @@ def build_app() -> FastAPI:
     The custom routes are registered before the mount: FastAPI matches in
     registration order, so ``/api/*`` and ``/health`` must not fall through to
     the Gradio root handler.
+
+    ``demo.queue()`` is mandatory here, not just a concurrency nicety: it is
+    what enables Gradio's session handling, and without it ``gr.State`` is never
+    serialised back to the client - so follow-up questions would silently lose
+    their conversation history.
     """
     api = create_api_app()
     demo = build_demo()
+    demo.queue(default_concurrency_limit=MAX_CONCURRENT_REQUESTS)
     return gr.mount_gradio_app(api, demo, path="/")
 
 
