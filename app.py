@@ -566,6 +566,23 @@ body {
 }
 #kw-question label > span { display: none; }
 
+/* Gradio wraps lone form inputs in a .form whose background is the border
+   colour (a 1px divider trick). Stretched by the flex column it shows as a
+   slate slab under the textbox, so flatten it and stop it growing. */
+.gradio-container .form,
+#kw-main .form {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    flex: 0 0 auto !important;
+    min-height: 0 !important;
+    height: auto !important;
+    gap: 0 !important;
+}
+#kw-question, #kw-question label, #kw-question .input-container {
+    flex: 0 0 auto; min-height: 0; height: auto; background: transparent !important;
+}
+
 /* ---------- Toolbar ---------- */
 #kw-toolbar { flex: 0 0 auto; align-items: center; gap: 10px; margin-top: -6px; }
 #kw-toolbar button {
@@ -594,7 +611,7 @@ body {
    text rather than a grey slab. */
 #kw-answer {
     flex: 1 1 auto;
-    min-height: 200px;
+    min-height: 150px;
     padding: 20px 4px;
     background: transparent;
     border: none;
@@ -642,21 +659,21 @@ mark.kw-pct { background: var(--kw-pct-bg); color: var(--kw-pct-fg); }
 
 /* ---------- Empty state ---------- */
 .kw-empty {
-    min-height: 220px;
+    min-height: 150px;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    gap: 8px; text-align: center; color: var(--kw-muted);
-    font-size: .92rem; line-height: 1.6;
+    gap: 6px; text-align: center; color: var(--kw-muted);
+    font-size: .9rem; line-height: 1.55;
 }
 .kw-empty-icon {
-    width: 58px; height: 58px; margin-bottom: 10px;
+    width: 44px; height: 44px; margin-bottom: 6px;
     display: grid; place-items: center;
-    border-radius: 18px; color: white;
+    border-radius: 14px; color: white;
     background: var(--kw-grad);
-    box-shadow: 0 14px 30px -10px rgba(124, 92, 246, .6);
+    box-shadow: 0 10px 22px -10px rgba(124, 92, 246, .6);
 }
-.kw-empty-title { font-weight: 700; font-size: 1.08rem; color: var(--kw-ink); letter-spacing: -0.01em; }
+.kw-empty-title { font-weight: 700; font-size: 1.02rem; color: var(--kw-ink); letter-spacing: -0.01em; }
 .kw-empty-sub { max-width: 380px; }
-.kw-empty-badges { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 10px; }
+.kw-empty-badges { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 8px; }
 .kw-badge {
     font-size: .72rem; font-weight: 650; padding: 5px 12px; border-radius: 999px;
     background: var(--kw-soft); color: var(--kw-accent); border: 1px solid var(--kw-line);
@@ -682,9 +699,9 @@ mark.kw-pct { background: var(--kw-pct-bg); color: var(--kw-pct-fg); }
 
 /* ---------- Loading: progress bar, stages, skeleton ---------- */
 .kw-loading {
-    min-height: 220px;
+    min-height: 150px;
     display: flex; flex-direction: column; justify-content: center; gap: 16px;
-    color: var(--kw-muted);
+    color: var(--kw-muted);;
 }
 .kw-loading-head { display: flex; align-items: center; gap: 14px; }
 .kw-spinner {
@@ -794,23 +811,23 @@ mark.kw-pct { background: var(--kw-pct-bg); color: var(--kw-pct-fg); }
     border: 1px solid var(--kw-line) !important;
     border-radius: 22px !important;
     box-shadow: var(--kw-shadow) !important;
-    padding: 18px !important;
-    display: flex; flex-direction: column; gap: 14px;
+    padding: 22px 22px 24px 22px !important;
+    display: flex; flex-direction: column; gap: 16px;
     backdrop-filter: blur(14px);
 }
 #kw-side .group > *, #kw-side .gr-group > *, #kw-side .styler > * {
     background: transparent !important;
 }
 #kw-side h3 {
-    font-size: .68rem; font-weight: 750;
+    font-size: .74rem; font-weight: 750;
     text-transform: uppercase; letter-spacing: .13em;
     color: var(--kw-accent);
     margin: 0;
 }
-.kw-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.kw-chips { display: flex; flex-wrap: wrap; gap: 9px; }
 .kw-chip {
-    font-size: .78rem; font-weight: 650;
-    padding: 5px 13px; border-radius: 999px;
+    font-size: .8rem; font-weight: 650;
+    padding: 7px 15px; border-radius: 999px;
     border: 1px solid var(--kw-line);
     background: var(--kw-soft); color: var(--kw-ink);
     transition: transform .12s ease, border-color .12s ease;
@@ -829,8 +846,8 @@ mark.kw-pct { background: var(--kw-pct-bg); color: var(--kw-pct-fg); }
 }
 #kw-examples tr { cursor: pointer; background: transparent !important; }
 #kw-examples td {
-    font-size: .84rem; line-height: 1.45; text-align: left !important;
-    padding: 11px 14px !important; border: 1px solid var(--kw-line) !important;
+    font-size: .86rem; line-height: 1.45; text-align: left !important;
+    padding: 13px 15px !important; border: 1px solid var(--kw-line) !important;
     border-radius: 14px; background: var(--kw-card-solid) !important;
     color: var(--kw-muted);
     transition: background .12s ease, color .12s ease, border-color .12s ease, transform .12s ease;
@@ -885,7 +902,7 @@ def build_demo() -> gr.Blocks:
                 )
 
         with gr.Row(equal_height=True, elem_id="kw-body"):
-            with gr.Column(scale=11, min_width=0, elem_id="kw-main"):
+            with gr.Column(scale=9, min_width=0, elem_id="kw-main"):
                 question = gr.Textbox(
                     label="Question",
                     placeholder=EXAMPLE_QUESTIONS[0],
@@ -907,7 +924,7 @@ def build_demo() -> gr.Blocks:
                 ):
                     sources = gr.HTML(EMPTY_SOURCES)
 
-            with gr.Column(scale=4, min_width=0, elem_id="kw-side"):
+            with gr.Column(scale=6, min_width=0, elem_id="kw-side"):
                 with gr.Group():
                     gr.Markdown("### Indexed")
                     companies_box = gr.HTML(
