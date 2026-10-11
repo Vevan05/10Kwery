@@ -22,6 +22,9 @@ The project demonstrates an end-to-end financial document retrieval pipeline con
 - Citation-grounded answer generation using **Groq**
 - Answer caching to avoid redundant LLM calls during evaluation
 - Rate limiting and retry with exponential backoff for the Groq free tier
+- Web interface: Gradio UI plus a FastAPI JSON API, served from one process
+- Streaming progress (spinner, stage bar, elapsed time) with a measured latency estimate
+- Per-client rate limiting and bounded concurrency for the shared free LLM key
 - Evaluation using **MRR**, **Hit@1**, **Hit@5**, ticker precision, rank disagreement, citation validity, and keyword coverage
 
 
@@ -126,6 +129,8 @@ Vector Search  BM25 Search    Vector Search   BM25 Search
 - Sentence Transformers (bi-encoder + CrossEncoder)
 - rank_bm25
 - Groq API
+- FastAPI + Gradio (web UI and JSON API)
+- uvicorn
 - NumPy
 - Requests
 - tqdm
@@ -195,6 +200,19 @@ This step:
 > skipped rather than re-embedded, which silently leaves stale embeddings behind.
 
 ### 4. Query the system
+
+**Web interface** (Gradio UI plus a JSON API on one server):
+
+```bash
+python app.py          # http://localhost:7860
+```
+
+While a query runs, the answer panel streams a spinner, a per-stage progress
+bar and a running elapsed counter, alongside an estimate taken from the median
+of the last dozen queries — a retrieval takes 10–17 s, so the panel would
+otherwise look frozen on the previous answer.
+
+**Command line:**
 
 ```bash
 python src/generate.py "How did Apple's R&D spending change year over year?"
@@ -460,9 +478,6 @@ Locally there is nothing to configure — the index resolves from `data/` and th
 answer cache from `eval/`. The CLI keeps working unchanged:
 `python src/generate.py "..."`.
 
-## Deployment-specific behaviour
-
-Because the free tier is shared and small, the web defaults differ from the CLI:
 ## Deployment-specific behaviour
 
 Because the free tier is shared and small, the web defaults differ from the CLI:
