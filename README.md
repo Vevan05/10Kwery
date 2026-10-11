@@ -138,6 +138,10 @@ Vector Search  BM25 Search    Vector Search   BM25 Search
 
 # Installation
 
+Python **3.11** is required; the project was developed and tested on **3.11.9**.
+The pinned dependency set (notably `torch==2.13.0+cpu`) is resolved against that
+version, so a different minor release may pull a different wheel.
+
 Clone the repository.
 
 ```bash
@@ -148,6 +152,8 @@ cd 10Kwery
 Install dependencies.
 
 ```bash
+python -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 ```
 
