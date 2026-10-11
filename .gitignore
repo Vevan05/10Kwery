@@ -1,10 +1,57 @@
-venv/
-__pycache__/
-*.pyc
+# Secrets - never commit. The bare `env` pattern also catches .env.* variants
+# such as .env.local or .env.production, which the plain `.env` entry misses.
 .env
+.env.*
+!.env.example
+
+# Virtualenvs (both common names)
+venv/
+.venv/
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Retrieval index and raw filings (449 MB total). Built by the scripts in
+# src/ingestion.py, src/chunk.py and src/index.py; never needed in the repo.
 data/
 chroma_db/
-.ipynb_checkpoints/
-.python-version
-.vscode/
+bm25_index.pkl
+
+# Local answer cache written during evaluation
 eval/answers_cache.json
+
+# Editor / OS / AI-tool scratch
+.vscode/
+.idea/
+.claude/
+.opencode/
+.cursor/
+.DS_Store
+*.swp
+*.tmp
+*.bak
+
+# Logs produced by local runs and background servers
+*.log
+nohup.out
+
+# Frontend build output (if a Vercel-hosted UI is added later)
+node_modules/
+dist/
+.next/
+.vercel/
+
+# Coverage / test artefacts
+.coverage
+htmlcov/
+
+# ChromaDB writes these next to the index; ignored for the same reason as data/
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal

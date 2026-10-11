@@ -4,6 +4,7 @@
 
 The project demonstrates an end-to-end financial document retrieval pipeline consisting of data ingestion, table-aware preprocessing, indexing, four-channel hybrid retrieval, type-balanced reranking, answer generation, and evaluation.
 
+![Demo](demo.png)
 
 ## Features
 

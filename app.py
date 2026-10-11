@@ -611,8 +611,8 @@ body {
    text rather than a grey slab. */
 #kw-answer {
     flex: 1 1 auto;
-    min-height: 150px;
-    padding: 20px 4px;
+    min-height: 0;
+    padding: 14px 4px;
     background: transparent;
     border: none;
     border-radius: 0;
@@ -659,21 +659,21 @@ mark.kw-pct { background: var(--kw-pct-bg); color: var(--kw-pct-fg); }
 
 /* ---------- Empty state ---------- */
 .kw-empty {
-    min-height: 150px;
+    min-height: 0; height: 100%;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     gap: 6px; text-align: center; color: var(--kw-muted);
     font-size: .9rem; line-height: 1.55;
 }
 .kw-empty-icon {
-    width: 44px; height: 44px; margin-bottom: 6px;
+    width: 38px; height: 38px; margin-bottom: 2px;
     display: grid; place-items: center;
     border-radius: 14px; color: white;
     background: var(--kw-grad);
     box-shadow: 0 10px 22px -10px rgba(124, 92, 246, .6);
 }
-.kw-empty-title { font-weight: 700; font-size: 1.02rem; color: var(--kw-ink); letter-spacing: -0.01em; }
-.kw-empty-sub { max-width: 380px; }
-.kw-empty-badges { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 8px; }
+.kw-empty-title { font-weight: 700; font-size: .98rem; color: var(--kw-ink); letter-spacing: -0.01em; }
+.kw-empty-sub { max-width: 380px; font-size: .84rem; }
+.kw-empty-badges { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 4px; }
 .kw-badge {
     font-size: .72rem; font-weight: 650; padding: 5px 12px; border-radius: 999px;
     background: var(--kw-soft); color: var(--kw-accent); border: 1px solid var(--kw-line);
@@ -699,9 +699,9 @@ mark.kw-pct { background: var(--kw-pct-bg); color: var(--kw-pct-fg); }
 
 /* ---------- Loading: progress bar, stages, skeleton ---------- */
 .kw-loading {
-    min-height: 150px;
+    min-height: 0; height: 100%;
     display: flex; flex-direction: column; justify-content: center; gap: 16px;
-    color: var(--kw-muted);;
+    color: var(--kw-muted);
 }
 .kw-loading-head { display: flex; align-items: center; gap: 14px; }
 .kw-spinner {
@@ -765,7 +765,7 @@ mark.kw-pct { background: var(--kw-pct-bg); color: var(--kw-pct-fg); }
     padding: 8px 4px; border: none; background: transparent !important;
 }
 #kw-sources button.label-wrap:hover, #kw-sources .label-wrap:hover { color: var(--kw-ink); }
-.kw-src-list { display: flex; flex-direction: column; gap: 10px; padding: 4px 0 10px 0; }
+.kw-src-list { display: flex; flex-direction: column; gap: 10px; padding: 4px 0 10px 0; max-height: 26vh; overflow-y: auto; }
 .kw-src {
     display: flex; gap: 14px; align-items: flex-start;
     padding: 14px 16px;
@@ -803,20 +803,29 @@ mark.kw-pct { background: var(--kw-pct-bg); color: var(--kw-pct-fg); }
 .kw-link:hover { text-decoration: underline; }
 .kw-muted { font-size: .85rem; color: var(--kw-muted); padding: 10px 6px; }
 
-/* ---------- Sidebar: glass cards ---------- */
-#kw-side { padding-left: 0; gap: 18px; }
-#kw-side .group, #kw-side .gr-group, #kw-side .styler,
-#kw-side div[class*="group"] {
+/* ---------- Sidebar: one card per Group ---------- */
+#kw-side { padding-left: 0; gap: 14px; }
+/* The card is the Group's outermost element (found by elem_id), so exactly
+   one border exists. Every wrapper div Gradio nests inside is flattened;
+   the old [class*="group"] selector matched all of them and stacked 3 edges. */
+#kw-card-idx, #kw-card-try {
     background: var(--kw-card) !important;
     border: 1px solid var(--kw-line) !important;
-    border-radius: 22px !important;
+    border-radius: 20px !important;
     box-shadow: var(--kw-shadow) !important;
-    padding: 22px 22px 24px 22px !important;
-    display: flex; flex-direction: column; gap: 16px;
+    padding: 16px 18px 18px 18px !important;
+    display: flex; flex-direction: column; gap: 12px;
     backdrop-filter: blur(14px);
 }
-#kw-side .group > *, #kw-side .gr-group > *, #kw-side .styler > * {
+#kw-card-idx div:not([class*="kw-"]),
+#kw-card-try div:not([class*="kw-"]) {
     background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+    border-radius: 0 !important;
+    padding: 0;
+    gap: 0;
 }
 #kw-side h3 {
     font-size: .74rem; font-weight: 750;
@@ -827,7 +836,7 @@ mark.kw-pct { background: var(--kw-pct-bg); color: var(--kw-pct-fg); }
 .kw-chips { display: flex; flex-wrap: wrap; gap: 9px; }
 .kw-chip {
     font-size: .8rem; font-weight: 650;
-    padding: 7px 15px; border-radius: 999px;
+    padding: 5px 13px; border-radius: 999px;
     border: 1px solid var(--kw-line);
     background: var(--kw-soft); color: var(--kw-ink);
     transition: transform .12s ease, border-color .12s ease;
@@ -835,27 +844,48 @@ mark.kw-pct { background: var(--kw-pct-bg); color: var(--kw-pct-fg); }
 .kw-chip:hover { transform: translateY(-1px); border-color: var(--kw-accent); }
 .kw-chip-accent { background: var(--kw-grad); color: white; border-color: transparent; }
 
-/* Example questions as soft, clickable rows. */
-#kw-examples .label, #kw-examples .label-wrap { display: none; }
-#kw-examples, #kw-examples .gr-samples-table, #kw-examples .table-wrap {
-    background: transparent !important; border: none !important;
+/* Example questions: each row is its own rounded card with an even gap.
+   The row (tr / gallery item) carries the border and radius, not the cell, so
+   it works whether Gradio renders a table or a list of buttons. Selectors are
+   prefixed with #kw-card-try to out-rank the card's flatten-everything reset. */
+#kw-card-try .label, #kw-card-try .label-wrap { display: none; }
+#kw-card-try table, #kw-card-try tbody,
+#kw-card-try .gallery, #kw-card-try .gallery-container {
+    display: flex !important; flex-direction: column; gap: 7px;
+    width: 100%; border: none !important; background: transparent !important;
+    border-collapse: separate; border-spacing: 0;
 }
-#kw-examples table {
-    border: none !important; width: 100%;
-    border-collapse: separate; border-spacing: 0 6px; background: transparent !important;
+#kw-card-try thead { display: none; }
+#kw-card-try tr,
+#kw-card-try .gallery-item.gallery-item {
+    display: block; width: 100%; box-sizing: border-box;
+    cursor: pointer; text-align: left;
+    border: 1px solid var(--kw-line) !important;
+    border-radius: 14px !important;
+    background: var(--kw-card-solid) !important;
+    overflow: hidden;
+    transition: background .12s ease, border-color .12s ease, transform .12s ease;
 }
-#kw-examples tr { cursor: pointer; background: transparent !important; }
-#kw-examples td {
-    font-size: .86rem; line-height: 1.45; text-align: left !important;
-    padding: 13px 15px !important; border: 1px solid var(--kw-line) !important;
-    border-radius: 14px; background: var(--kw-card-solid) !important;
+#kw-card-try td {
+    display: block; text-align: left !important;
+    padding: 8px 13px !important;
+    border: none !important; border-radius: 0 !important;
+    background: transparent !important;
+    font-size: .84rem; line-height: 1.4;
     color: var(--kw-muted);
-    transition: background .12s ease, color .12s ease, border-color .12s ease, transform .12s ease;
+    transition: color .12s ease;
 }
-#kw-examples tr:hover td {
-    background: var(--kw-soft) !important; color: var(--kw-ink);
-    border-color: var(--kw-accent) !important; transform: translateX(2px);
+#kw-card-try .gallery-item.gallery-item {
+    padding: 8px 13px; font-size: .84rem; line-height: 1.4; color: var(--kw-muted);
 }
+#kw-card-try tr:hover,
+#kw-card-try .gallery-item.gallery-item:hover {
+    background: var(--kw-soft) !important;
+    border-color: var(--kw-accent) !important;
+    transform: translateX(2px);
+}
+#kw-card-try tr:hover td,
+#kw-card-try .gallery-item.gallery-item:hover { color: var(--kw-ink); }
 
 /* Pinned to the bottom of the sidebar so both columns end on the same line. */
 #kw-foot {
@@ -869,6 +899,26 @@ mark.kw-pct { background: var(--kw-pct-bg); color: var(--kw-pct-fg); }
 
 /* ---------- Scrollbars ---------- */
 * { scrollbar-width: thin; scrollbar-color: var(--kw-line) transparent; }
+
+/* ---------- Fit the viewport: nothing scrolls except inside panels ---------- */
+@media (min-width: 801px) {
+    html, body { height: 100%; overflow: hidden !important; }
+    .gradio-container {
+        height: 100vh; max-height: 100vh;
+        min-height: 0 !important;
+        padding: 20px 28px 16px 28px !important;
+        gap: 14px;
+        overflow: hidden;
+    }
+    #kw-header { padding-bottom: 14px; }
+    .kw-h1 { font-size: 1.5rem; }
+    #kw-body { flex: 1 1 0; min-height: 0; flex-wrap: nowrap !important; }
+    #kw-main, #kw-side { min-height: 0; max-height: 100%; }
+    #kw-main { gap: 14px; }
+    #kw-answer { flex: 1 1 0; min-height: 0; overflow-y: auto; }
+    #kw-side { overflow-y: auto; padding-right: 2px; }
+    #kw-foot { margin-top: 0; padding: 10px 14px; }
+}
 
 /* ---------- Small screens ---------- */
 @media (max-width: 800px) {
@@ -925,14 +975,14 @@ def build_demo() -> gr.Blocks:
                     sources = gr.HTML(EMPTY_SOURCES)
 
             with gr.Column(scale=6, min_width=0, elem_id="kw-side"):
-                with gr.Group():
+                with gr.Group(elem_id="kw-card-idx"):
                     gr.Markdown("### Indexed")
                     companies_box = gr.HTML(
                         '<div class="kw-muted">loading…</div>',
                         elem_id="kw-companies",
                     )
 
-                with gr.Group():
+                with gr.Group(elem_id="kw-card-try"):
                     gr.Markdown("### Try asking")
                     gr.Examples(
                         examples=EXAMPLE_QUESTIONS,
